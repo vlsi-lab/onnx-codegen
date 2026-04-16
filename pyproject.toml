@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onnx-codegen"
+version = "0.1.0"
+description = "Generate self-contained C inference code from ONNX models"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.9"
+dependencies = ["numpy", "onnx>=1.14", "mako"]
+
+[project.scripts]
+onnx-codegen = "onnx_codegen.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+onnx_codegen = ["templates/*"]
