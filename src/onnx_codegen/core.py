@@ -1230,7 +1230,7 @@ def _build_weight_definitions(
             f32 = flat.astype(np.float32)
 
             if forced_weight_ctype and forced_weight_ctype != "float":
-                # Quant override: cast float weights to the requested integer type
+                # Quant override: cast float weights to the requested integer type.
                 _check_weight_range(name, f32, quant.weight_bits)
                 np_dt = quant.weight_np_dtype
                 clamped = np.clip(
