@@ -400,8 +400,8 @@ static void requant_channel_ncw(
         for (int ch = 0; ch < c; ++ch) {
             for (int ix = 0; ix < w; ++ix) {
                 size_t idx = (size_t)bn * c * w + (size_t)ch * w + (size_t)ix;
-                int64_t rq = (int64_t)in[idx] * kappa[ch] + lambda[ch];
-                int32_t res = (int32_t)(rq >> shift);
+                int32_t rq = in[idx] * kappa[ch] + lambda[ch];
+                int32_t res = rq >> shift;
                 if (res < lo) res = lo;
                 if (res > hi) res = hi;
                 out[idx] = (uint8_t)res;

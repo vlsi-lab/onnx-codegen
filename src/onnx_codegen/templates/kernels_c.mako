@@ -16,23 +16,19 @@ static inline int clamp_int(int x, int lo, int hi) {
     return x;
 }
 
-static inline int64_t clamp_i64(int64_t x, int64_t lo, int64_t hi) {
+static inline int32_t clamp_i32(int32_t x, int32_t lo, int32_t hi) {
     if (x < lo) return lo;
     if (x > hi) return hi;
     return x;
 }
 
 % if quant_enabled:
-static inline int32_t cast_i64_to_i32(int64_t x) {
-    return (int32_t)clamp_i64(x, (-2147483647LL - 1LL), 2147483647LL);
-}
-
 static inline ONNXCG_ACT_T cast_i32_to_act(int32_t x) {
     if (sizeof(ONNXCG_ACT_T) == 1) {
-        return (ONNXCG_ACT_T)clamp_i64((int64_t)x, 0, 255);
+        return (ONNXCG_ACT_T)clamp_i32(x, 0, 255);
     }
     if (sizeof(ONNXCG_ACT_T) == 2) {
-        return (ONNXCG_ACT_T)clamp_i64((int64_t)x, -32768, 32767);
+        return (ONNXCG_ACT_T)clamp_i32(x, -32768, 32767);
     }
     return (ONNXCG_ACT_T)x;
 }
@@ -97,7 +93,7 @@ void ${prefix}_kernel_conv1d_ncw_i8w(
         for (int oc = 0; oc < cout; ++oc) {
             int g = oc / cout_g;
             for (int ox = 0; ox < lout; ++ox) {
-                int64_t acc = b ? (int64_t)b[oc] : 0;
+                int32_t acc = b ? b[oc] : 0;
                 for (int ic = 0; ic < cin_g; ++ic) {
                     int ic_abs = g * cin_g + ic;
                     for (int kk = 0; kk < k; ++kk) {
@@ -105,11 +101,11 @@ void ${prefix}_kernel_conv1d_ncw_i8w(
                         if (ix < 0 || ix >= lin) continue;
                         size_t x_idx = (size_t)bn * cin * lin + (size_t)ic_abs * lin + (size_t)ix;
                         size_t w_idx = (size_t)oc * cin_g * k + (size_t)ic * k + (size_t)kk;
-                        acc += (int64_t)x[x_idx] * (int64_t)w[w_idx];
+                        acc += (int32_t)x[x_idx] * (int32_t)w[w_idx];
                     }
                 }
                 size_t y_idx = (size_t)bn * cout * lout + (size_t)oc * lout + (size_t)ox;
-                y[y_idx] = cast_i64_to_i32(acc);
+                y[y_idx] = acc;
             }
         }
     }
@@ -127,7 +123,7 @@ void ${prefix}_kernel_conv1d_ncw_i32x_i8w(
         for (int oc = 0; oc < cout; ++oc) {
             int g = oc / cout_g;
             for (int ox = 0; ox < lout; ++ox) {
-                int64_t acc = b ? (int64_t)b[oc] : 0;
+                int32_t acc = b ? b[oc] : 0;
                 for (int ic = 0; ic < cin_g; ++ic) {
                     int ic_abs = g * cin_g + ic;
                     for (int kk = 0; kk < k; ++kk) {
@@ -135,11 +131,11 @@ void ${prefix}_kernel_conv1d_ncw_i32x_i8w(
                         if (ix < 0 || ix >= lin) continue;
                         size_t x_idx = (size_t)bn * cin * lin + (size_t)ic_abs * lin + (size_t)ix;
                         size_t w_idx = (size_t)oc * cin_g * k + (size_t)ic * k + (size_t)kk;
-                        acc += (int64_t)x[x_idx] * (int64_t)w[w_idx];
+                        acc += x[x_idx] * (int32_t)w[w_idx];
                     }
                 }
                 size_t y_idx = (size_t)bn * cout * lout + (size_t)oc * lout + (size_t)ox;
-                y[y_idx] = cast_i64_to_i32(acc);
+                y[y_idx] = acc;
             }
         }
     }
@@ -160,7 +156,7 @@ void ${prefix}_kernel_conv1d_ncw_i8w_requant(
         for (int oc = 0; oc < cout; ++oc) {
             int g = oc / cout_g;
             for (int ox = 0; ox < lout; ++ox) {
-                int64_t acc = 0;
+                int32_t acc = 0;
                 for (int ic = 0; ic < cin_g; ++ic) {
                     int ic_abs = g * cin_g + ic;
                     for (int kk = 0; kk < k; ++kk) {
@@ -168,11 +164,11 @@ void ${prefix}_kernel_conv1d_ncw_i8w_requant(
                         if (ix < 0 || ix >= lin) continue;
                         size_t x_idx = (size_t)bn * cin * lin + (size_t)ic_abs * lin + (size_t)ix;
                         size_t w_idx = (size_t)oc * cin_g * k + (size_t)ic * k + (size_t)kk;
-                        acc += (int64_t)x[x_idx] * (int64_t)w[w_idx];
+                        acc += (int32_t)x[x_idx] * (int32_t)w[w_idx];
                     }
                 }
-                int64_t rq = acc * (int64_t)kappa[oc] + (int64_t)lambda[oc];
-                int32_t res = (int32_t)(rq >> shift);
+                int32_t rq = acc * kappa[oc] + lambda[oc];
+                int32_t res = rq >> shift;
                 size_t y_idx = (size_t)bn * cout * lout + (size_t)oc * lout + (size_t)ox;
                 y[y_idx] = cast_i32_to_act(res);
             }
@@ -193,7 +189,7 @@ void ${prefix}_kernel_conv1d_ncw_i32x_i8w_requant(
         for (int oc = 0; oc < cout; ++oc) {
             int g = oc / cout_g;
             for (int ox = 0; ox < lout; ++ox) {
-                int64_t acc = 0;
+                int32_t acc = 0;
                 for (int ic = 0; ic < cin_g; ++ic) {
                     int ic_abs = g * cin_g + ic;
                     for (int kk = 0; kk < k; ++kk) {
@@ -201,11 +197,11 @@ void ${prefix}_kernel_conv1d_ncw_i32x_i8w_requant(
                         if (ix < 0 || ix >= lin) continue;
                         size_t x_idx = (size_t)bn * cin * lin + (size_t)ic_abs * lin + (size_t)ix;
                         size_t w_idx = (size_t)oc * cin_g * k + (size_t)ic * k + (size_t)kk;
-                        acc += (int64_t)x[x_idx] * (int64_t)w[w_idx];
+                        acc += x[x_idx] * (int32_t)w[w_idx];
                     }
                 }
-                int64_t rq = acc * (int64_t)kappa[oc] + (int64_t)lambda[oc];
-                int32_t res = (int32_t)(rq >> shift);
+                int32_t rq = acc * kappa[oc] + lambda[oc];
+                int32_t res = rq >> shift;
                 size_t y_idx = (size_t)bn * cout * lout + (size_t)oc * lout + (size_t)ox;
                 y[y_idx] = cast_i32_to_act(res);
             }
@@ -391,8 +387,8 @@ void ${prefix}_kernel_conv1d_ncw_i8w_requant(
                         acc += (int32_t)x[x_idx] * (int32_t)w[w_idx];
                     }
                 }
-                int64_t rq = (int64_t)acc * kappa[oc] + lambda[oc];
-                int32_t res = (int32_t)(rq >> shift);
+                int32_t rq = acc * kappa[oc] + lambda[oc];
+                int32_t res = rq >> shift;
                 if (res < 0) res = 0;
                 if (res > 255) res = 255;
                 size_t y_idx = (size_t)bn * cout * lout + (size_t)oc * lout + (size_t)ox;

@@ -22,12 +22,6 @@ static void tensor_copy_bytes(const void* in, void* out, size_t nbytes) {
     memcpy(out, in, nbytes);
 }
 
-static inline int64_t clamp_i64(int64_t x, int64_t lo, int64_t hi) {
-    if (x < lo) return lo;
-    if (x > hi) return hi;
-    return x;
-}
-
 static inline int32_t clamp_i32(int32_t x, int32_t lo, int32_t hi) {
     if (x < lo) return lo;
     if (x > hi) return hi;
@@ -398,8 +392,8 @@ static void requant_channel_ncw(
         for (int ch = 0; ch < c; ++ch) {
             for (int x = 0; x < w; ++x) {
                 size_t idx = ((size_t)bn * c + (size_t)ch) * w + (size_t)x;
-                int64_t rq = (int64_t)in[idx] * (int64_t)kappa[ch] + (int64_t)lambda[ch];
-                int32_t res = (int32_t)(rq >> shift);
+                int32_t rq = in[idx] * kappa[ch] + lambda[ch];
+                int32_t res = rq >> shift;
                 out[idx] = clamp_i32_to_act(clamp_i32(res, lo, hi));
             }
         }
