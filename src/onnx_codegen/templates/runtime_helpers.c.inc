@@ -1,12 +1,8 @@
 /*
- * Kernel override hooks:
- * - Define ONNXCG_CONV1D_FUNC to call a custom conv1d function (default: conv1d_ncw).
- * - Define ONNXCG_CONV1D_I8W_FUNC to call a custom int8-weight conv1d function.
- * - Define ONNXCG_DISABLE_DEFAULT_CONV1D_IMPL to exclude both default implementations.
- *
  * Type configuration:
  * - ONNXCG_ACT_T: element type for activations/intermediates (default: float).
  *   Set via --quant flag, e.g. --quant 8w8a makes this int8_t.
+ * - conv1d / linear kernels live in the generated <prefix>_kernels.h/.c files.
  */
 #ifndef ONNXCG_ACT_T
 #define ONNXCG_ACT_T float
@@ -14,13 +10,6 @@
 
 /* Convenience: cast a literal to the activation type. */
 #define ONNXCG_ACT(x) ((ONNXCG_ACT_T)(x))
-
-#ifndef ONNXCG_CONV1D_FUNC
-#define ONNXCG_CONV1D_FUNC conv1d_ncw
-#endif
-#ifndef ONNXCG_CONV1D_I8W_FUNC
-#define ONNXCG_CONV1D_I8W_FUNC conv1d_ncw_i8w
-#endif
 
 static size_t tensor_numel(const int* dims, int rank) {
     size_t n = 1;
@@ -129,64 +118,6 @@ static void dequantize_linear_s8(
     int8_t z = zero_point[0];
     for (size_t i = 0; i < n; ++i) {
         out[i] = ((float)((int)in[i] - (int)z)) * s;
-    }
-}
-
-static void qlinear_conv1d_u8s8u8(
-    const uint8_t* x,
-    const float* x_scale,
-    const uint8_t* x_zp,
-    const int8_t* w,
-    const float* w_scale,
-    const int8_t* w_zp,
-    const float* y_scale,
-    const uint8_t* y_zp,
-    const int32_t* b,
-    uint8_t* y,
-    int n,
-    int cin,
-    int lin,
-    int cout,
-    int k,
-    int stride,
-    int pad_l,
-    int pad_r,
-    int dilation,
-    int groups,
-    int lout) {
-    (void)pad_r;
-    int cin_g = cin / groups;
-    int cout_g = cout / groups;
-    float xs = x_scale[0];
-    float ws = w_scale[0];
-    float ys = y_scale[0];
-    int xz = (int)x_zp[0];
-    int wz = (int)w_zp[0];
-    int yz = (int)y_zp[0];
-    float requant = (xs * ws) / ((ys == 0.0f) ? 1.0f : ys);
-
-    for (int bn = 0; bn < n; ++bn) {
-        for (int oc = 0; oc < cout; ++oc) {
-            int g = oc / cout_g;
-            for (int ox = 0; ox < lout; ++ox) {
-                int32_t acc = b ? b[oc] : 0;
-                for (int ic = 0; ic < cin_g; ++ic) {
-                    int ic_abs = g * cin_g + ic;
-                    for (int kk = 0; kk < k; ++kk) {
-                        int ix = ox * stride - pad_l + kk * dilation;
-                        if (ix < 0 || ix >= lin) continue;
-                        size_t x_idx = (size_t)bn * cin * lin + (size_t)ic_abs * lin + (size_t)ix;
-                        size_t w_idx = (size_t)oc * cin_g * k + (size_t)ic * k + (size_t)kk;
-                        int xv = (int)x[x_idx] - xz;
-                        int wv = (int)w[w_idx] - wz;
-                        acc += (int32_t)(xv * wv);
-                    }
-                }
-                int q = (int)lrintf((float)acc * requant) + yz;
-                size_t y_idx = (size_t)bn * cout * lout + (size_t)oc * lout + (size_t)ox;
-                y[y_idx] = (uint8_t)clamp_int(q, 0, 255);
-            }
-        }
     }
 }
 
@@ -457,153 +388,6 @@ static void slice_tensor(
             in_off += (size_t)id * in_strides[d];
         }
         out[linear] = in[in_off];
-    }
-}
-
-static void matmul_2d(const ONNXCG_ACT_T* a, const ONNXCG_ACT_T* b, ONNXCG_ACT_T* out, int m, int k, int n) {
-    for (int i = 0; i < m; ++i) {
-        for (int j = 0; j < n; ++j) {
-            ONNXCG_ACT_T acc = ONNXCG_ACT(0);
-            for (int p = 0; p < k; ++p) {
-                acc += a[i * k + p] * b[p * n + j];
-            }
-            out[i * n + j] = acc;
-        }
-    }
-}
-
-static void gemm_2d(
-    const ONNXCG_ACT_T* a, const ONNXCG_ACT_T* b, const ONNXCG_ACT_T* c,
-    ONNXCG_ACT_T* out, int m, int k, int n,
-    int trans_a, int trans_b, ONNXCG_ACT_T alpha, ONNXCG_ACT_T beta,
-    int c_rank, const int* c_dims) {
-    for (int i = 0; i < m; ++i) {
-        for (int j = 0; j < n; ++j) {
-            ONNXCG_ACT_T acc = ONNXCG_ACT(0);
-            for (int p = 0; p < k; ++p) {
-                ONNXCG_ACT_T av = trans_a ? a[p * m + i] : a[i * k + p];
-                ONNXCG_ACT_T bv = trans_b ? b[j * k + p] : b[p * n + j];
-                acc += av * bv;
-            }
-            ONNXCG_ACT_T cv = ONNXCG_ACT(0);
-            if (c != NULL) {
-                if (c_rank == 0) {
-                    cv = c[0];
-                } else if (c_rank == 1) {
-                    cv = c[j];
-                } else {
-                    cv = c[i * n + j];
-                }
-            }
-            out[i * n + j] = ONNXCG_ACT(alpha * acc + beta * cv);
-        }
-    }
-}
-
-#ifndef ONNXCG_DISABLE_DEFAULT_CONV1D_IMPL
-static void conv1d_ncw(
-    const ONNXCG_ACT_T* x, const float* w, const float* b, ONNXCG_ACT_T* y,
-    int n, int cin, int lin,
-    int cout, int k,
-    int stride, int pad_l, int pad_r, int dilation, int groups, int lout) {
-    int cin_g = cin / groups;
-    int cout_g = cout / groups;
-    for (int bn = 0; bn < n; ++bn) {
-        for (int oc = 0; oc < cout; ++oc) {
-            int g = oc / cout_g;
-            for (int ox = 0; ox < lout; ++ox) {
-                float acc = b ? b[oc] : 0.0f;
-                for (int ic = 0; ic < cin_g; ++ic) {
-                    int ic_abs = g * cin_g + ic;
-                    for (int kk = 0; kk < k; ++kk) {
-                        int ix = ox * stride - pad_l + kk * dilation;
-                        if (ix < 0 || ix >= lin) continue;
-                        size_t x_idx = (size_t)bn * cin * lin + (size_t)ic_abs * lin + (size_t)ix;
-                        size_t w_idx = (size_t)oc * cin_g * k + (size_t)ic * k + (size_t)kk;
-                        acc += (float)x[x_idx] * w[w_idx];
-                    }
-                }
-                size_t y_idx = (size_t)bn * cout * lout + (size_t)oc * lout + (size_t)ox;
-                y[y_idx] = ONNXCG_ACT(acc);
-            }
-        }
-    }
-}
-
-/* Same as conv1d_ncw but weights are stored as int8_t. */
-static void conv1d_ncw_i8w(
-    const ONNXCG_ACT_T* x, const int8_t* w, const float* b, ONNXCG_ACT_T* y,
-    int n, int cin, int lin,
-    int cout, int k,
-    int stride, int pad_l, int pad_r, int dilation, int groups, int lout) {
-    (void)pad_r;
-    int cin_g = cin / groups;
-    int cout_g = cout / groups;
-    for (int bn = 0; bn < n; ++bn) {
-        for (int oc = 0; oc < cout; ++oc) {
-            int g = oc / cout_g;
-            for (int ox = 0; ox < lout; ++ox) {
-                float acc = b ? b[oc] : 0.0f;
-                for (int ic = 0; ic < cin_g; ++ic) {
-                    int ic_abs = g * cin_g + ic;
-                    for (int kk = 0; kk < k; ++kk) {
-                        int ix = ox * stride - pad_l + kk * dilation;
-                        if (ix < 0 || ix >= lin) continue;
-                        size_t x_idx = (size_t)bn * cin * lin + (size_t)ic_abs * lin + (size_t)ix;
-                        size_t w_idx = (size_t)oc * cin_g * k + (size_t)ic * k + (size_t)kk;
-                        acc += (float)x[x_idx] * (float)w[w_idx];
-                    }
-                }
-                size_t y_idx = (size_t)bn * cout * lout + (size_t)oc * lout + (size_t)ox;
-                y[y_idx] = ONNXCG_ACT(acc);
-            }
-        }
-    }
-}
-#endif
-
-/* ---------------------------------------------------------------------------
- * Pulp-NN-style fused conv1d + per-channel requantization (int8w, uint8 act).
- *
- * out[c] = clamp( (dot(x, w) * kappa[c] + lambda[c]) >> shift, 0, 255 )
- *
- * kappa / lambda are per-output-channel int32 arrays that encode the
- * batch-normalisation and re-quantisation in a single multiply-add-shift.
- * Uses int64 for the kappa*acc product to avoid overflow on RV32.
- * -----------------------------------------------------------------------*/
-static void conv1d_ncw_i8w_requant(
-    const uint8_t* x, const int8_t* w, uint8_t* y,
-    const int32_t* kappa, const int32_t* lambda, int shift,
-    int n, int cin, int lin,
-    int cout, int k,
-    int stride, int pad_l, int pad_r, int dilation, int groups, int lout) {
-    (void)pad_r;
-    int cin_g = cin / groups;
-    int cout_g = cout / groups;
-    for (int bn = 0; bn < n; ++bn) {
-        for (int oc = 0; oc < cout; ++oc) {
-            int g = oc / cout_g;
-            for (int ox = 0; ox < lout; ++ox) {
-                int32_t acc = 0;
-                for (int ic = 0; ic < cin_g; ++ic) {
-                    int ic_abs = g * cin_g + ic;
-                    for (int kk = 0; kk < k; ++kk) {
-                        int ix = ox * stride - pad_l + kk * dilation;
-                        if (ix < 0 || ix >= lin) continue;
-                        size_t x_idx = (size_t)bn * cin * lin + (size_t)ic_abs * lin + (size_t)ix;
-                        size_t w_idx = (size_t)oc * cin_g * k + (size_t)ic * k + (size_t)kk;
-                        acc += (int32_t)x[x_idx] * (int32_t)w[w_idx];
-                    }
-                }
-                /* pulp-nn style: requant = (acc * kappa + lambda) >> shift */
-                int64_t rq = (int64_t)acc * kappa[oc] + lambda[oc];
-                int32_t res = (int32_t)(rq >> shift);
-                if (res < 0) res = 0;
-                if (res > 255) res = 255;
-                size_t y_idx = (size_t)bn * cout * lout + (size_t)oc * lout + (size_t)ox;
-                y[y_idx] = (uint8_t)res;
-            }
-        }
     }
 }
 

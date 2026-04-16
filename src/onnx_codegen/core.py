@@ -33,7 +33,9 @@ Notes:
 from __future__ import annotations
 
 import datetime
+import os
 import re
+import subprocess
 import sys
 import tempfile
 import warnings
@@ -62,9 +64,11 @@ class QuantConfig:
     """Post-training type-override configuration.
 
     Parsed from strings like ``8w8a``, ``8w16a``, ``16w16a``.
-    ``weight_bits`` controls the C type used for constant weight arrays,
-    ``act_bits`` controls the C type used for intermediate activation buffers.
-    A value of 0 means "keep original" (float).
+    ``weight_bits`` controls the C type used for constant weight arrays.
+    ``act_bits`` controls the storage type used for requantized activations.
+    Integer accumulators and final non-requantized logits may still use
+    ``int32_t`` internally when needed to preserve semantics. A value of 0
+    means "keep original" (float).
     """
 
     weight_bits: int = 0
@@ -112,7 +116,7 @@ class QuantConfig:
         if self.act_bits == 0:
             return "float"
         if self.act_bits == 8:
-            return "uint8_t"  # activations are unsigned in quantized inference
+            return "uint8_t"
         return self._TYPE_MAP[self.act_bits][0]
 
     @property
@@ -183,8 +187,16 @@ RUNTIME_TENSOR_TYPES = {
     TensorProto.FLOAT16,
     TensorProto.DOUBLE,
     TensorProto.INT8,
+    TensorProto.INT16,
     TensorProto.UINT8,
     TensorProto.INT32,
+}
+
+QUANT_BACKEND_ATTRS: Dict[str, Set[str]] = {
+    "Conv": {"weight_bits", "bias_bits"},
+    "Mul": {"mult_bits"},
+    "Add": {"add_bits"},
+    "Clip": {"out_bits"},
 }
 
 
@@ -214,6 +226,54 @@ class NodeOp:
     inputs: List[str]
     outputs: List[str]
     attrs: Dict[str, AttrValue]
+
+
+@dataclass
+class CompareCaseResult:
+    name: str
+    matches: bool
+    max_abs_diff: float
+
+
+@dataclass
+class CompareResult:
+    matches: bool
+    cases: List[CompareCaseResult]
+
+
+@dataclass
+class MemoryBreakdown:
+    weights_bytes: int
+    scratch_bytes: int
+    input_bytes: int
+    output_bytes: int
+    inlined_const_bytes: int
+    num_scratch_buffers: int
+
+    @property
+    def total_const_bytes(self) -> int:
+        return self.weights_bytes + self.inlined_const_bytes
+
+    @property
+    def total_runtime_bytes(self) -> int:
+        return self.scratch_bytes + self.input_bytes + self.output_bytes
+
+    @property
+    def total_bytes(self) -> int:
+        return self.total_const_bytes + self.total_runtime_bytes
+
+
+@dataclass
+class GenerationResult:
+    model_h_path: Path
+    model_c_path: Path
+    weights_h_path: Path
+    kernels_h_path: Path
+    kernels_c_path: Path
+    n_inputs: int
+    n_outputs: int
+    n_nodes: int
+    memory: MemoryBreakdown
 
 
 class CodegenError(RuntimeError):
@@ -258,6 +318,21 @@ def parse_attribute(attr: onnx.AttributeProto) -> AttrValue:
     raise CodegenError(f"Unsupported attribute type in {attr.name}")
 
 
+def quantized_onnx_elem_type(quant: Optional[QuantConfig]) -> Optional[int]:
+    if quant is None or quant.act_bits == 0:
+        return None
+    mapping = {
+        8: TensorProto.UINT8,
+        16: TensorProto.INT16,
+        32: TensorProto.INT32,
+    }
+    return mapping[quant.act_bits]
+
+
+def runtime_elem_type(elem_type: int, quant: Optional[QuantConfig] = None) -> int:
+    return elem_type
+
+
 def collect_value_info(model: onnx.ModelProto) -> Dict[str, Tuple[List[int], int]]:
     out: Dict[str, Tuple[List[int], int]] = {}
 
@@ -296,6 +371,26 @@ def read_model(onnx_path: Path, skip_shape_inference: bool) -> onnx.ModelProto:
                 "ONNX shape inference failed; pass --skip-shape-inference if your model "
                 "already has complete static shapes"
             ) from exc
+    return model
+
+
+def sanitize_quantized_model(
+    model: onnx.ModelProto,
+    quant: Optional[QuantConfig],
+    *,
+    strip_backend_attrs: bool = True,
+) -> onnx.ModelProto:
+    if strip_backend_attrs:
+        for node in model.graph.node:
+            bad_attrs = QUANT_BACKEND_ATTRS.get(node.op_type)
+            if not bad_attrs:
+                continue
+            keep = [attr for attr in node.attribute if attr.name not in bad_attrs]
+            if len(keep) == len(node.attribute):
+                continue
+            del node.attribute[:]
+            node.attribute.extend(keep)
+
     return model
 
 
@@ -422,6 +517,123 @@ def build_graph(model: onnx.ModelProto) -> Tuple[
 
     return tensors, const_arrays, nodes, runtime_inputs, graph_outputs
 
+
+def _clip_bounds(
+    node: NodeOp, const_arrays: Dict[str, np.ndarray]
+) -> Tuple[float, float]:
+    clip_lo = 0.0
+    clip_hi = 255.0
+    clip_ins = [x for x in node.inputs if x]
+    if len(clip_ins) >= 3:
+        if clip_ins[1] in const_arrays:
+            clip_lo = float(const_arrays[clip_ins[1]].flat[0])
+        if clip_ins[2] in const_arrays:
+            clip_hi = float(const_arrays[clip_ins[2]].flat[0])
+    else:
+        clip_lo = float(node.attrs.get("min", 0.0))
+        clip_hi = float(node.attrs.get("max", 255.0))
+    return clip_lo, clip_hi
+
+
+def _quant_range_for_elem_type(elem_type: int) -> Optional[Tuple[int, int]]:
+    if elem_type == TensorProto.UINT8:
+        return (0, 255)
+    if elem_type == TensorProto.INT16:
+        return (-32768, 32767)
+    if elem_type == TensorProto.INT32:
+        return (-2147483648, 2147483647)
+    return None
+
+
+def _assign_quantized_runtime_tensor_types(
+    tensors: Dict[str, TensorInfo],
+    const_arrays: Dict[str, np.ndarray],
+    nodes: List[NodeOp],
+    inputs: Sequence[str],
+    quant: Optional[QuantConfig],
+) -> None:
+    """Assign runtime tensor storage types for quantized codegen.
+
+    Quantized activations use the requested activation storage type only after a
+    requant/clip step. Accumulators, residual-add outputs and final conv logits
+    remain int32.
+    """
+
+    quant_elem_type = quantized_onnx_elem_type(quant)
+    if quant_elem_type is None:
+        return
+
+    for name in inputs:
+        info = tensors[name]
+        if not info.is_const and info.elem_type in FLOAT_TENSOR_TYPES:
+            info.elem_type = TensorProto.INT32
+
+    passthrough_ops = {
+        "Identity",
+        "Relu",
+        "LeakyRelu",
+        "Sigmoid",
+        "Tanh",
+        "Pad",
+        "Slice",
+        "Reshape",
+        "Transpose",
+        "Squeeze",
+        "Unsqueeze",
+        "Flatten",
+        "Concat",
+        "MaxPool",
+        "AveragePool",
+        "GlobalAveragePool",
+        "Softmax",
+        "BatchNormalization",
+    }
+
+    quant_range = _quant_range_for_elem_type(quant_elem_type)
+
+    for node in nodes:
+        outs = [o for o in node.outputs if o]
+        ins = [i for i in node.inputs if i]
+        if not outs:
+            continue
+        out_name = outs[0]
+        out_info = tensors[out_name]
+        if out_info.is_const:
+            continue
+
+        op = node.op_type
+        if op in passthrough_ops and ins:
+            out_info.elem_type = tensors[ins[0]].elem_type
+            continue
+
+        if op == "Add":
+            out_info.elem_type = TensorProto.INT32
+            continue
+
+        if op in {"Mul", "Div", "Floor", "MatMul", "Gemm"}:
+            out_info.elem_type = TensorProto.INT32
+            continue
+
+        if op == "Conv":
+            out_info.elem_type = TensorProto.INT32
+            continue
+
+        if op == "RequantShift":
+            out_info.elem_type = quant_elem_type
+            continue
+
+        if op == "Clip" and ins:
+            in_type = tensors[ins[0]].elem_type
+            clip_lo, clip_hi = _clip_bounds(node, const_arrays)
+            if (
+                in_type == TensorProto.INT32
+                and quant_range is not None
+                and int(clip_lo) == quant_range[0]
+                and int(clip_hi) == quant_range[1]
+            ):
+                out_info.elem_type = quant_elem_type
+            else:
+                out_info.elem_type = in_type
 
 # ---------------------------------------------------------------------------
 # Requant fusion: Mul → Add → Div → Floor → Clip  →  RequantShift
@@ -795,6 +1007,12 @@ def _float_array_as_int8(flat: np.ndarray) -> bool:
     )
 
 
+def _float_array_is_integer_valued(arr: np.ndarray) -> bool:
+    """Return True if every float element is an integer value."""
+    flat = arr.reshape(-1).astype(np.float64, copy=False)
+    return bool(np.all(flat == np.floor(flat)))
+
+
 def _check_weight_range(name: str, flat: np.ndarray, target_bits: int) -> None:
     """Warn if float weight values will be truncated by the target bit-width."""
     if target_bits == 0:
@@ -811,15 +1029,92 @@ def _check_weight_range(name: str, flat: np.ndarray, target_bits: int) -> None:
         )
 
 
+def _cast_integer_float_array(
+    name: str, arr: np.ndarray, target_dtype: np.dtype, target_bits: int
+) -> np.ndarray:
+    """Convert an integer-valued float array to an integer dtype with range checks."""
+    if not _float_array_is_integer_valued(arr):
+        raise CodegenError(
+            f"Tensor '{name}' uses float storage but contains non-integer values; "
+            f"cannot cast it to int{target_bits} safely."
+        )
+
+    flat = arr.reshape(-1).astype(np.float64, copy=False)
+    info = np.iinfo(target_dtype)
+    vmin = float(np.min(flat))
+    vmax = float(np.max(flat))
+    if vmin < info.min or vmax > info.max:
+        raise CodegenError(
+            f"Tensor '{name}' range [{vmin:.4g}, {vmax:.4g}] does not fit in "
+            f"int{target_bits}."
+        )
+    return np.round(arr).astype(target_dtype)
+
+
+def _retype_integer_valued_float_constants(
+    tensors: Dict[str, TensorInfo],
+    const_arrays: Dict[str, np.ndarray],
+    nodes: List[NodeOp],
+) -> None:
+    """Retype integer-valued float constants when their consumer requires integers.
+
+    This is mainly used for models such as GraphModule_float.onnx where ONNX stores
+    convolution parameters as FLOAT even though their values are integral.
+    """
+
+    consumer_type_map: Dict[Tuple[str, int], Tuple[np.dtype, int]] = {
+        ("Conv", 1): (np.dtype(np.int8), TensorProto.INT8),
+        ("Conv", 2): (np.dtype(np.int32), TensorProto.INT32),
+    }
+
+    targets: Dict[str, Set[Tuple[np.dtype, int]]] = {}
+    blocked: Set[str] = set()
+
+    for node in nodes:
+        for input_idx, name in enumerate(node.inputs):
+            if not name or name not in const_arrays:
+                continue
+            target = consumer_type_map.get((node.op_type, input_idx))
+            if target is None:
+                blocked.add(name)
+                continue
+            targets.setdefault(name, set()).add(target)
+
+    for name, target_set in targets.items():
+        if name in blocked or len(target_set) != 1:
+            continue
+        arr = const_arrays[name]
+        if arr.dtype not in (np.float16, np.float32, np.float64):
+            continue
+
+        target_dtype, elem_type = next(iter(target_set))
+        casted = _cast_integer_float_array(
+            name,
+            arr,
+            target_dtype,
+            8 if elem_type == TensorProto.INT8 else 32,
+        )
+        const_arrays[name] = casted
+
+        info = tensors[name]
+        tensors[name] = TensorInfo(
+            name=info.name,
+            shape=list(casted.shape),
+            elem_type=elem_type,
+            is_const=True,
+        )
+
+
 def _build_weight_definitions(
     prefix: str,
     const_arrays: Dict[str, np.ndarray],
+    tensor_elem_types: Optional[Dict[str, int]] = None,
     quant: Optional[QuantConfig] = None,
 ) -> Tuple[List[str], Set[str]]:
     """Build C weight array definitions.
 
     Returns (defs, int8_weight_names) where int8_weight_names is the set of
-    tensor names whose float32 values were compressed and stored as int8_t.
+    tensor names stored as int8_t.
     """
     defs: List[str] = []
     int8_names: Set[str] = set()
@@ -848,8 +1143,15 @@ def _build_weight_definitions(
                 )
                 if quant.weight_bits == 8:
                     int8_names.add(name)
-            elif _float_array_as_int8(f32):
-                # Store integer-valued weights as int8_t (4x smaller)
+            elif (
+                tensor_elem_types is not None
+                and tensor_elem_types.get(name) == TensorProto.INT8
+            ):
+                # Preserve semantic int8 tensors retyped earlier in the pipeline.
+                if not _float_array_as_int8(f32):
+                    raise CodegenError(
+                        f"Tensor '{name}' is marked as int8 but contains out-of-range values."
+                    )
                 vals = ", ".join(str(int(v)) for v in f32)
                 defs.append(f"static const int8_t {sym}[{flat.size}] = {{{vals}}};")
                 int8_names.add(name)
@@ -865,6 +1167,8 @@ def _build_weight_definitions(
             }[arr.dtype]
             vals = ", ".join(str(int(v)) for v in flat)
             defs.append(f"static const {ctype} {sym}[{flat.size}] = {{{vals}}};")
+            if arr.dtype == np.dtype(np.int8):
+                int8_names.add(name)
         elif arr.dtype in (np.uint8, np.uint16, np.uint32, np.uint64):
             ctype = {
                 np.dtype(np.uint8): "uint8_t",
@@ -884,10 +1188,16 @@ def _build_weight_definitions(
 def render_weights_header(
     prefix: str,
     const_arrays: Dict[str, np.ndarray],
+    tensors: Optional[Dict[str, TensorInfo]] = None,
     quant: Optional[QuantConfig] = None,
 ) -> Tuple[str, Set[str]]:
     """Return (rendered_header, int8_weight_names)."""
-    defs, int8_names = _build_weight_definitions(prefix, const_arrays, quant)
+    tensor_elem_types = None
+    if tensors is not None:
+        tensor_elem_types = {name: info.elem_type for name, info in tensors.items()}
+    defs, int8_names = _build_weight_definitions(
+        prefix, const_arrays, tensor_elem_types, quant
+    )
     return (
         render_template(
             "weights_h.mako",
@@ -947,13 +1257,30 @@ def _compute_buffer_assignments(
         if name not in death:
             death[name] = birth.get(name, 0)
 
+    fused_conv_outputs: Set[str] = set()
+    for i, node in enumerate(nodes):
+        if node.op_type != "Conv":
+            continue
+        nxt = nodes[i + 1] if i + 1 < len(nodes) else None
+        if nxt is None or nxt.op_type != "RequantShift":
+            continue
+        conv_out = node.outputs[0] if node.outputs else None
+        if not conv_out or conv_out not in nxt.inputs:
+            continue
+        # Adjustment 1: extend Conv input life.
+        conv_in = node.inputs[0] if node.inputs else None
+        if conv_in and conv_in in death:
+            death[conv_in] = max(death[conv_in], i + 1)
+        # Adjustment 2: mark Conv output as not needing its own scratch buffer.
+        if conv_out:
+            fused_conv_outputs.add(conv_out)
+
+    scratch -= fused_conv_outputs
+
     # Group by C element type so we never alias across types.
     # When quant overrides activations, float tensors become act_ctype.
     def _resolve_ctype(tname: str) -> str:
-        orig = c_type_for_elem_type(tensors[tname].elem_type)
-        if quant and quant.act_bits and orig == "float":
-            return quant.act_ctype
-        return orig
+        return c_type_for_elem_type(runtime_elem_type(tensors[tname].elem_type, quant))
 
     by_ctype: Dict[str, List[str]] = {}
     for name in scratch:
@@ -1000,29 +1327,35 @@ def _compute_buffer_assignments(
 
 
 def render_model_header(
-    prefix: str, inputs: List[str], outputs: List[str], tensors: Dict[str, TensorInfo]
+    prefix: str,
+    inputs: List[str],
+    outputs: List[str],
+    tensors: Dict[str, TensorInfo],
+    quant: Optional[QuantConfig] = None,
 ) -> str:
     io_size_macros: List[str] = []
     io_type_macros: List[str] = []
     for i, n in enumerate(inputs):
+        elem_type = runtime_elem_type(tensors[n].elem_type, quant)
         io_size_macros.append(
             f"#define {prefix.upper()}_INPUT_{i}_SIZE {tensors[n].numel}"
         )
         io_size_macros.append(
-            f"#define {prefix.upper()}_INPUT_{i}_ELEM_SIZE {elem_size_for_elem_type(tensors[n].elem_type)}"
+            f"#define {prefix.upper()}_INPUT_{i}_ELEM_SIZE {elem_size_for_elem_type(elem_type)}"
         )
         io_type_macros.append(
-            f"#define {prefix.upper()}_INPUT_{i}_ONNX_TYPE {tensors[n].elem_type}"
+            f"#define {prefix.upper()}_INPUT_{i}_ONNX_TYPE {elem_type}"
         )
     for i, n in enumerate(outputs):
+        elem_type = runtime_elem_type(tensors[n].elem_type, quant)
         io_size_macros.append(
             f"#define {prefix.upper()}_OUTPUT_{i}_SIZE {tensors[n].numel}"
         )
         io_size_macros.append(
-            f"#define {prefix.upper()}_OUTPUT_{i}_ELEM_SIZE {elem_size_for_elem_type(tensors[n].elem_type)}"
+            f"#define {prefix.upper()}_OUTPUT_{i}_ELEM_SIZE {elem_size_for_elem_type(elem_type)}"
         )
         io_type_macros.append(
-            f"#define {prefix.upper()}_OUTPUT_{i}_ONNX_TYPE {tensors[n].elem_type}"
+            f"#define {prefix.upper()}_OUTPUT_{i}_ONNX_TYPE {elem_type}"
         )
 
     return render_template(
@@ -1034,6 +1367,36 @@ def render_model_header(
         num_outputs=len(outputs),
         io_size_macros=io_size_macros,
         io_type_macros=io_type_macros,
+    )
+
+
+def render_kernels_header(prefix: str, quant: Optional[QuantConfig] = None) -> str:
+    act_ctype = quant.act_ctype if quant and quant.act_bits else "float"
+    quant_act_elem_type = quantized_onnx_elem_type(quant)
+    return render_template(
+        "kernels_h.mako",
+        guard=f"{prefix.upper()}_KERNELS_H",
+        prefix=prefix,
+        act_ctype=act_ctype,
+        quant_enabled=bool(quant and quant.enabled),
+    )
+
+
+def render_kernels_source(
+    prefix: str,
+    custom_kernels_header: Optional[str],
+    quant: Optional[QuantConfig] = None,
+) -> str:
+    act_ctype = quant.act_ctype if quant and quant.act_bits else "float"
+    timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    return render_template(
+        "kernels_c.mako",
+        prefix=prefix,
+        timestamp=timestamp,
+        custom_kernels_header=custom_kernels_header,
+        act_ctype=act_ctype,
+        include_math=not (quant and quant.enabled),
+        quant_enabled=bool(quant and quant.enabled),
     )
 
 
@@ -1071,6 +1434,7 @@ def c_type_for_elem_type(elem_type: int) -> str:
         TensorProto.FLOAT16: "float",
         TensorProto.DOUBLE: "float",
         TensorProto.INT8: "int8_t",
+        TensorProto.INT16: "int16_t",
         TensorProto.UINT8: "uint8_t",
         TensorProto.INT32: "int32_t",
     }
@@ -1085,8 +1449,24 @@ def elem_size_for_elem_type(elem_type: int) -> int:
         TensorProto.FLOAT16: 4,
         TensorProto.DOUBLE: 4,
         TensorProto.INT8: 1,
+        TensorProto.INT16: 2,
         TensorProto.UINT8: 1,
         TensorProto.INT32: 4,
+    }
+    if elem_type not in mapping:
+        raise CodegenError(f"Unsupported runtime tensor type {elem_type}")
+    return mapping[elem_type]
+
+
+def numpy_dtype_for_elem_type(elem_type: int) -> np.dtype:
+    mapping = {
+        TensorProto.FLOAT: np.dtype(np.float32),
+        TensorProto.FLOAT16: np.dtype(np.float32),
+        TensorProto.DOUBLE: np.dtype(np.float32),
+        TensorProto.INT8: np.dtype(np.int8),
+        TensorProto.INT16: np.dtype(np.int16),
+        TensorProto.UINT8: np.dtype(np.uint8),
+        TensorProto.INT32: np.dtype(np.int32),
     }
     if elem_type not in mapping:
         raise CodegenError(f"Unsupported runtime tensor type {elem_type}")
@@ -1096,23 +1476,21 @@ def elem_size_for_elem_type(elem_type: int) -> int:
 def copy_stmt(
     src: str, dst: str, info: TensorInfo, quant: Optional[QuantConfig] = None
 ) -> str:
-    ctype = c_type_for_elem_type(info.elem_type)
-    if quant and quant.act_bits and ctype == "float":
-        ctype = quant.act_ctype
+    elem_type = runtime_elem_type(info.elem_type, quant)
+    ctype = c_type_for_elem_type(elem_type)
     if ctype == "float":
         return f"    tensor_copy((const float*)({src}), (float*)({dst}), (size_t){info.numel});"
-    nbytes = info.numel * (
-        quant.act_elem_size
-        if quant and quant.act_bits and info.elem_type in FLOAT_TENSOR_TYPES
-        else elem_size_for_elem_type(info.elem_type)
-    )
+    nbytes = info.numel * elem_size_for_elem_type(elem_type)
     return f"    tensor_copy_bytes((const void*)({src}), (void*)({dst}), (size_t){nbytes});"
 
 
-def render_runtime_helpers() -> str:
-    helpers_path = (
-        Path(__file__).resolve().parent / "templates" / "runtime_helpers.c.inc"
+def render_runtime_helpers(quant: Optional[QuantConfig] = None) -> str:
+    template_name = (
+        "runtime_helpers_quant.c.inc"
+        if quant and quant.enabled
+        else "runtime_helpers.c.inc"
     )
+    helpers_path = Path(__file__).resolve().parent / "templates" / template_name
     return helpers_path.read_text(encoding="utf-8").rstrip()
 
 
@@ -1206,6 +1584,7 @@ def render_model_source(
 
     # Resolve the C type for activation buffers (float unless quant overrides)
     act_ctype = quant.act_ctype if quant and quant.act_bits else "float"
+    quant_act_elem_type = quantized_onnx_elem_type(quant)
     weight_ctype = quant.weight_ctype if quant and quant.weight_bits else None
 
     shape_lines: List[str] = []
@@ -1232,9 +1611,7 @@ def render_model_source(
             return f"{prefix}_w_{safe_tensor_ref(name)}"
         if name in inputs:
             idx = inputs.index(name)
-            ctype = c_type_for_elem_type(tensors[name].elem_type)
-            if quant and quant.act_bits and ctype == "float":
-                ctype = act_ctype
+            ctype = c_type_for_elem_type(runtime_elem_type(tensors[name].elem_type, quant))
             return f"((const {ctype}*)inputs[{idx}])"
         bid = buf_assignments[name]
         return f"{prefix}_scratch_{bid}"
@@ -1303,6 +1680,8 @@ def render_model_source(
             )
 
         elif op == "Clip":
+            in_type = tensors[ins[0]].elem_type
+            out_type = out_info.elem_type
             if len(ins) >= 3 and ins[1] in const_arrays and ins[2] in const_arrays:
                 min_v = float(const_arrays[ins[1]].reshape(-1)[0])
                 max_v = float(const_arrays[ins[2]].reshape(-1)[0])
@@ -1311,21 +1690,43 @@ def render_model_source(
                 max_raw = node.attrs.get("max", np.inf)
                 min_v = float(cast(Union[int, float], min_raw))
                 max_v = float(cast(Union[int, float], max_raw))
-            # Use ONNXCG_ACT() cast for integer activation types to avoid
-            # float→int truncation warnings and overflow (e.g. 255→uint8).
-            if quant and quant.act_bits:
+            if quant and quant.act_bits and in_type == TensorProto.INT32:
+                lo_lit = str(int(min_v))
+                hi_lit = str(int(max_v))
+                clip_func = (
+                    "tensor_clip_i32_to_act"
+                    if out_type == quant_act_elem_type
+                    else "tensor_clip_i32"
+                )
+            elif quant and quant.act_bits and out_type == quant_act_elem_type:
                 lo_lit = f"ONNXCG_ACT({int(min_v)})"
                 hi_lit = f"ONNXCG_ACT({int(max_v)})"
+                clip_func = "tensor_clip_act"
             else:
                 lo_lit = c_float_literal(min_v)
                 hi_lit = c_float_literal(max_v)
+                clip_func = "tensor_clip"
             lines.append(
-                f"    tensor_clip({tensor_expr(ins[0])}, {tensor_expr(out0)}, (size_t){out_info.numel}, {lo_lit}, {hi_lit});"
+                f"    {clip_func}({tensor_expr(ins[0])}, {tensor_expr(out0)}, (size_t){out_info.numel}, {lo_lit}, {hi_lit});"
             )
 
         elif op == "Add":
+            if quant and quant.act_bits and out_info.elem_type == TensorProto.INT32:
+                a_type = tensors[ins[0]].elem_type
+                b_type = tensors[ins[1]].elem_type
+                if a_type == quant_act_elem_type and b_type == quant_act_elem_type:
+                    add_func = "tensor_add_broadcast_act_act_i32"
+                elif a_type == TensorProto.INT32 and b_type == TensorProto.INT32:
+                    add_func = "tensor_add_broadcast_i32"
+                else:
+                    raise CodegenError(
+                        f"Quantized Add type combination ({a_type}, {b_type}) "
+                        f"is unsupported in node '{node.name}'"
+                    )
+            else:
+                add_func = "tensor_add_broadcast"
             lines.append(
-                "    tensor_add_broadcast("
+                f"    {add_func}("
                 f"{tensor_expr(ins[0])}, {shape_expr(ins[0])}, {rank_expr(ins[0])}, "
                 f"{tensor_expr(ins[1])}, {shape_expr(ins[1])}, {rank_expr(ins[1])}, "
                 f"{tensor_expr(out0)}, {shape_expr(out0)}, {rank_expr(out0)}"
@@ -1367,7 +1768,7 @@ def render_model_source(
                 n, c, w = act.shape
                 lines.append(
                     f"    requant_channel_ncw("
-                    f"{tensor_expr(ins[0])}, (uint8_t*){tensor_expr(out0)}, "
+                    f"{tensor_expr(ins[0])}, {tensor_expr(out0)}, "
                     f"{tensor_expr(kappa_name)}, {tensor_expr(lambda_name)}, "
                     f"{shift}, {lo}, {hi}, {n}, {c}, {w});"
                 )
@@ -1390,7 +1791,7 @@ def render_model_source(
                     f"MatMul incompatible inner dims in node '{node.name}'"
                 )
             lines.append(
-                f"    matmul_2d({tensor_expr(ins[0])}, {tensor_expr(ins[1])}, {tensor_expr(out0)}, {m}, {k}, {n});"
+                f"    ONNXCG_MATMUL2D_FUNC({tensor_expr(ins[0])}, {tensor_expr(ins[1])}, {tensor_expr(out0)}, {m}, {k}, {n});"
             )
 
         elif op == "Gemm":
@@ -1423,7 +1824,7 @@ def render_model_source(
                 c_dims = shape_expr(ins[2])
 
             lines.append(
-                f"    gemm_2d({tensor_expr(ins[0])}, {tensor_expr(ins[1])}, {c_expr}, {tensor_expr(out0)}, "
+                f"    ONNXCG_GEMM2D_FUNC({tensor_expr(ins[0])}, {tensor_expr(ins[1])}, {c_expr}, {tensor_expr(out0)}, "
                 f"{a_m}, {a_k}, {b_n}, {trans_a}, {trans_b}, {c_float_literal(alpha)}, {c_float_literal(beta)}, {c_rank}, {c_dims});"
             )
 
@@ -1447,6 +1848,10 @@ def render_model_source(
                 and ins[1] in int8_weight_names
                 and (len(ins) < 3 or not ins[2])  # no conv bias
             )
+            if fuse_rq:
+                rq_out = next_nd.outputs[0]
+                if tensor_expr(ins[0]) == tensor_expr(rq_out):
+                    fuse_rq = False
 
             if fuse_rq and x.rank == 3:
                 n, cin, lin = x.shape
@@ -1461,10 +1866,15 @@ def render_model_source(
                 kappa_name = rq.inputs[1]
                 lambda_name = rq.inputs[2]
                 shift = int(rq.attrs["shift"])
+                conv_func = (
+                    "ONNXCG_CONV1D_I32X_I8W_REQUANT_FUNC"
+                    if x.elem_type == TensorProto.INT32
+                    else "ONNXCG_CONV1D_I8W_REQUANT_FUNC"
+                )
                 lines.append(
-                    f"    conv1d_ncw_i8w_requant("
-                    f"(const uint8_t*){tensor_expr(ins[0])}, {tensor_expr(ins[1])}, "
-                    f"(uint8_t*){tensor_expr(rq_out)}, "
+                    f"    {conv_func}("
+                    f"{tensor_expr(ins[0])}, {tensor_expr(ins[1])}, "
+                    f"{tensor_expr(rq_out)}, "
                     f"{tensor_expr(kappa_name)}, {tensor_expr(lambda_name)}, {shift}, "
                     f"{n}, {cin}, {lin}, {cout}, {k}, "
                     f"{strides[0]}, {pads[0]}, {pads[1]}, {dil[0]}, {groups}, {lout});"
@@ -1479,16 +1889,43 @@ def render_model_source(
                     raise CodegenError(
                         f"Conv1D expects 2 pad values in node '{node.name}'"
                     )
-                # Use int8 weight variant when the weight was compressed to int8_t
-                conv_func = (
-                    "ONNXCG_CONV1D_I8W_FUNC"
-                    if ins[1] in int8_weight_names
-                    else "ONNXCG_CONV1D_FUNC"
-                )
-                lines.append(
-                    f"    {conv_func}({tensor_expr(ins[0])}, {tensor_expr(ins[1])}, {b}, {tensor_expr(out0)}, "
-                    f"{n}, {cin}, {lin}, {cout}, {k}, {strides[0]}, {pads[0]}, {pads[1]}, {dil[0]}, {groups}, {lout});"
-                )
+                if quant and ins[1] in int8_weight_names:
+                    if len(ins) >= 3 and ins[2]:
+                        bias_type = tensors[ins[2]].elem_type
+                        if bias_type != TensorProto.INT32:
+                            raise CodegenError(
+                                "Quantized Conv1D currently requires int32 bias or no bias "
+                                f"in node '{node.name}'"
+                            )
+                        b = f"(const int32_t*){tensor_expr(ins[2])}"
+                    conv_func = (
+                        "ONNXCG_CONV1D_I32X_I8W_FUNC"
+                        if x.elem_type == TensorProto.INT32
+                        else "ONNXCG_CONV1D_I8W_FUNC"
+                    )
+                    lines.append(
+                        f"    {conv_func}({tensor_expr(ins[0])}, "
+                        f"{tensor_expr(ins[1])}, {b}, (int32_t*){tensor_expr(out0)}, "
+                        f"{n}, {cin}, {lin}, {cout}, {k}, {strides[0]}, {pads[0]}, {pads[1]}, {dil[0]}, {groups}, {lout});"
+                    )
+                else:
+                    # Use int8 weight variant when the weight was compressed to int8_t
+                    conv_func = "ONNXCG_CONV1D_FUNC"
+                    if ins[1] in int8_weight_names:
+                        bias_type = (
+                            tensors[ins[2]].elem_type
+                            if len(ins) >= 3 and ins[2]
+                            else None
+                        )
+                        if bias_type == TensorProto.INT32:
+                            conv_func = "ONNXCG_CONV1D_I8W_I32B_FUNC"
+                            b = f"(const int32_t*){tensor_expr(ins[2])}"
+                        else:
+                            conv_func = "ONNXCG_CONV1D_I8W_FUNC"
+                    lines.append(
+                        f"    {conv_func}({tensor_expr(ins[0])}, {tensor_expr(ins[1])}, {b}, {tensor_expr(out0)}, "
+                        f"{n}, {cin}, {lin}, {cout}, {k}, {strides[0]}, {pads[0]}, {pads[1]}, {dil[0]}, {groups}, {lout});"
+                    )
             elif x.rank == 4:
                 n, cin, hin, win = x.shape
                 cout, _, kh, kw = w.shape
@@ -1632,7 +2069,7 @@ def render_model_source(
             if len(ins) >= 9 and ins[8]:
                 b = tensor_expr(ins[8])
             lines.append(
-                f"    qlinear_conv1d_u8s8u8((const uint8_t*)({tensor_expr(ins[0])}), (const float*)({tensor_expr(ins[1])}), (const uint8_t*)({tensor_expr(ins[2])}), "
+                f"    ONNXCG_QLINEAR_CONV1D_FUNC((const uint8_t*)({tensor_expr(ins[0])}), (const float*)({tensor_expr(ins[1])}), (const uint8_t*)({tensor_expr(ins[2])}), "
                 f"(const int8_t*)({tensor_expr(ins[3])}), (const float*)({tensor_expr(ins[4])}), (const int8_t*)({tensor_expr(ins[5])}), "
                 f"(const float*)({tensor_expr(ins[6])}), (const uint8_t*)({tensor_expr(ins[7])}), (const int32_t*)({b}), (uint8_t*)({tensor_expr(out0)}), "
                 f"{n}, {cin}, {lin}, {cout}, {k}, {strides[0]}, {pads[0]}, {pads[1]}, {dil[0]}, {groups}, {lout});"
@@ -1672,9 +2109,18 @@ def render_model_source(
             lines.append(
                 f"    static const int {prefix}_pad_end_{name_s}[{rank}] = {{{pe_vals}}};"
             )
+            if quant and quant.act_bits and x.elem_type == TensorProto.INT32:
+                pad_lit = str(int(pad_value))
+                pad_func = "pad_tensor_constant_i32"
+            elif quant and quant.act_bits and x.elem_type == quant_act_elem_type:
+                pad_lit = f"ONNXCG_ACT({int(pad_value)})"
+                pad_func = "pad_tensor_constant_act"
+            else:
+                pad_lit = c_float_literal(pad_value)
+                pad_func = "pad_tensor_constant"
             lines.append(
-                f"    pad_tensor_constant({tensor_expr(ins[0])}, {tensor_expr(out0)}, {shape_expr(ins[0])}, {shape_expr(out0)}, {rank}, "
-                f"{prefix}_pad_begin_{name_s}, {prefix}_pad_end_{name_s}, {c_float_literal(pad_value)});"
+                f"    {pad_func}({tensor_expr(ins[0])}, {tensor_expr(out0)}, {shape_expr(ins[0])}, {shape_expr(out0)}, {rank}, "
+                f"{prefix}_pad_begin_{name_s}, {prefix}_pad_end_{name_s}, {pad_lit});"
             )
 
         elif op == "Slice":
@@ -1739,8 +2185,14 @@ def render_model_source(
             lines.append(
                 f"    static const int {prefix}_slice_steps_{name_s}[{rank}] = {{{st_vals}}};"
             )
+            if quant and quant.act_bits and x.elem_type == TensorProto.INT32:
+                slice_func = "slice_tensor_i32"
+            elif quant and quant.act_bits and x.elem_type == quant_act_elem_type:
+                slice_func = "slice_tensor_act"
+            else:
+                slice_func = "slice_tensor"
             lines.append(
-                f"    slice_tensor({tensor_expr(ins[0])}, {tensor_expr(out0)}, {shape_expr(ins[0])}, {shape_expr(out0)}, {rank}, "
+                f"    {slice_func}({tensor_expr(ins[0])}, {tensor_expr(out0)}, {shape_expr(ins[0])}, {shape_expr(out0)}, {rank}, "
                 f"{prefix}_slice_starts_{name_s}, {prefix}_slice_steps_{name_s});"
             )
 
@@ -1837,11 +2289,30 @@ def render_model_source(
         act_ctype=act_ctype,
         shape_defs="\n".join(shape_lines),
         buffer_defs="\n".join(buffer_lines),
-        runtime_helpers=render_runtime_helpers(),
+        runtime_helpers=render_runtime_helpers(quant),
+        include_math=not (quant and quant.enabled),
         ops_body="\n".join(lines),
         output_copies="\n".join(output_copy_lines),
     )
     return rendered, layer_keys
+
+
+def _ctype_size(ctype: str) -> int:
+    mapping = {
+        "float": 4,
+        "double": 8,
+        "int8_t": 1,
+        "uint8_t": 1,
+        "int16_t": 2,
+        "uint16_t": 2,
+        "int32_t": 4,
+        "uint32_t": 4,
+        "int64_t": 8,
+        "uint64_t": 8,
+    }
+    if ctype not in mapping:
+        raise CodegenError(f"Unsupported C type in memory breakdown: {ctype}")
+    return mapping[ctype]
 
 
 def _resolve_onnx_path(
@@ -1865,6 +2336,324 @@ def _resolve_onnx_path(
     return onnx_files[0], tmp_dir
 
 
+def _render_compare_main(
+    prefix: str,
+    input_elem_types: Sequence[int],
+    output_elem_types: Sequence[int],
+) -> str:
+    prefix_upper = prefix.upper()
+    lines = [
+        "#include <stdio.h>",
+        "#include <stdint.h>",
+        "#include <stdlib.h>",
+        "",
+        f'#include "{prefix}_model.h"',
+        "",
+        "static int read_exact(const char* path, void* dst, size_t nbytes) {",
+        '    FILE* fp = fopen(path, "rb");',
+        "    if (fp == NULL) return -1;",
+        "    size_t got = fread(dst, 1, nbytes, fp);",
+        "    fclose(fp);",
+        "    return got == nbytes ? 0 : -2;",
+        "}",
+        "",
+        "static int write_exact(const char* path, const void* src, size_t nbytes) {",
+        '    FILE* fp = fopen(path, "wb");',
+        "    if (fp == NULL) return -1;",
+        "    size_t wrote = fwrite(src, 1, nbytes, fp);",
+        "    fclose(fp);",
+        "    return wrote == nbytes ? 0 : -2;",
+        "}",
+        "",
+        "int main(void) {",
+    ]
+
+    for idx, elem_type in enumerate(input_elem_types):
+        ctype = c_type_for_elem_type(elem_type)
+        lines.append(
+            f"    {ctype} input_{idx}[{prefix_upper}_INPUT_{idx}_SIZE] = {{0}};"
+        )
+    for idx, elem_type in enumerate(output_elem_types):
+        ctype = c_type_for_elem_type(elem_type)
+        lines.append(
+            f"    {ctype} output_{idx}[{prefix_upper}_OUTPUT_{idx}_SIZE] = {{0}};"
+        )
+
+    lines.append("")
+    for idx in range(len(input_elem_types)):
+        lines.append(
+            f'    if (read_exact("input_{idx}.bin", input_{idx}, sizeof(input_{idx})) != 0) return {10 + idx};'
+        )
+
+    input_args = ", ".join(f"input_{idx}" for idx in range(len(input_elem_types)))
+    output_args = ", ".join(f"output_{idx}" for idx in range(len(output_elem_types)))
+    lines.extend(
+        [
+            f"    const void* inputs[{len(input_elem_types)}] = {{{input_args}}};",
+            f"    void* outputs[{len(output_elem_types)}] = {{{output_args}}};",
+            f"    int rc = {prefix}_infer(inputs, outputs);",
+            "    if (rc != 0) return rc;",
+        ]
+    )
+
+    for idx in range(len(output_elem_types)):
+        lines.append(
+            f'    if (write_exact("output_{idx}.bin", output_{idx}, sizeof(output_{idx})) != 0) return {40 + idx};'
+        )
+
+    lines.extend(["    return 0;", "}", ""])
+    return "\n".join(lines)
+
+
+def _compiler_command(cc: Optional[str]) -> str:
+    if cc:
+        return cc
+    return os.environ.get("CC", "gcc")
+
+
+def _generate_compare_inputs(
+    tensors: Dict[str, TensorInfo],
+    inputs: Sequence[str],
+    quant: Optional[QuantConfig],
+    random_cases: int,
+    seed: int,
+) -> List[Tuple[str, List[np.ndarray]]]:
+    rng = np.random.default_rng(seed)
+    cases: List[Tuple[str, List[np.ndarray]]] = []
+
+    def make_case_arrays(case_idx: Optional[int]) -> List[np.ndarray]:
+        arrays: List[np.ndarray] = []
+        for name in inputs:
+            info = tensors[name]
+            elem_type = runtime_elem_type(info.elem_type, quant)
+            dtype = numpy_dtype_for_elem_type(elem_type)
+            shape = tuple(info.shape)
+            if case_idx is None:
+                arr = np.zeros(shape, dtype=dtype)
+            else:
+                if elem_type == TensorProto.UINT8:
+                    base = rng.integers(0, 17, size=shape, dtype=np.int32)
+                    arr = base.astype(dtype)
+                elif elem_type in (
+                    TensorProto.INT8,
+                    TensorProto.INT16,
+                    TensorProto.INT32,
+                ):
+                    base = rng.integers(-8, 9, size=shape, dtype=np.int32)
+                    arr = base.astype(dtype)
+                else:
+                    base = rng.integers(-8, 9, size=shape, dtype=np.int32)
+                    arr = base.astype(np.float32)
+            arrays.append(np.ascontiguousarray(arr))
+        return arrays
+
+    cases.append(("zeros", make_case_arrays(None)))
+    for case_idx in range(random_cases):
+        cases.append((f"random_{case_idx}", make_case_arrays(case_idx)))
+    return cases
+
+
+def _prepare_reference_feed(
+    input_names: Sequence[str],
+    ref_tensors: Dict[str, TensorInfo],
+    c_inputs: Sequence[np.ndarray],
+) -> Dict[str, np.ndarray]:
+    feed: Dict[str, np.ndarray] = {}
+    for name, carr in zip(input_names, c_inputs):
+        ref_dtype = numpy_dtype_for_elem_type(ref_tensors[name].elem_type)
+        feed[name] = np.ascontiguousarray(carr.astype(ref_dtype, copy=False))
+    return feed
+
+
+def compare_generated_c_to_onnx(
+    onnx_path: Path,
+    out_dir: Path,
+    prefix: str,
+    *,
+    reference_onnx_path: Optional[Path] = None,
+    skip_shape_inference: bool,
+    quant: Optional[QuantConfig] = None,
+    random_cases: int = 2,
+    seed: int = 0,
+    atol: float = 1e-5,
+    cc: Optional[str] = None,
+) -> CompareResult:
+    """Compare generated C inference against the reference ONNX model.
+
+    The ONNX reference is always evaluated from the float-parameter model. This
+    is intentional: some exported models store convolution parameters as
+    ``float32`` even though their numeric magnitude is already integer-consistent
+    with the generated C path.
+
+    A temporary ``main.c`` is created only for the comparison executable and is
+    deleted automatically afterwards.
+    """
+
+    resolved_onnx, tmp_dir = _resolve_onnx_path(onnx_path)
+    ref_source = reference_onnx_path if reference_onnx_path is not None else onnx_path
+    resolved_ref_onnx, ref_tmp_dir = _resolve_onnx_path(ref_source)
+    try:
+        codegen_model = read_model(
+            resolved_onnx, skip_shape_inference=skip_shape_inference
+        )
+        codegen_model = sanitize_quantized_model(codegen_model, quant)
+        tensors, const_arrays, nodes, inputs, outputs = build_graph(codegen_model)
+        if quant:
+            nodes = _fuse_requant(nodes, const_arrays, tensors)
+        _retype_integer_valued_float_constants(tensors, const_arrays, nodes)
+        _assign_quantized_runtime_tensor_types(tensors, const_arrays, nodes, inputs, quant)
+
+        ref_model = read_model(
+            resolved_ref_onnx, skip_shape_inference=skip_shape_inference
+        )
+        ref_model = sanitize_quantized_model(ref_model, None)
+        ref_tensors, _, _, ref_inputs, _ = build_graph(ref_model)
+
+        if list(inputs) != list(ref_inputs):
+            raise CodegenError(
+                "Generated C inputs do not match ONNX reference inputs; "
+                "cannot compare safely."
+            )
+
+        try:
+            from onnx.reference import ReferenceEvaluator
+        except ImportError as exc:
+            raise CodegenError(
+                "ONNX reference evaluator is unavailable in this environment."
+            ) from exc
+
+        ref_eval = ReferenceEvaluator(ref_model)
+
+        model_h_path = out_dir / f"{prefix}_model.h"
+        model_c_path = out_dir / f"{prefix}_model.c"
+        kernels_c_path = out_dir / f"{prefix}_kernels.c"
+        if not model_h_path.exists() or not model_c_path.exists():
+            raise CodegenError(
+                "Generated C files not found for comparison; run code generation first."
+            )
+
+        input_elem_types = [
+            runtime_elem_type(tensors[name].elem_type, quant) for name in inputs
+        ]
+        output_elem_types = [
+            runtime_elem_type(tensors[name].elem_type, quant) for name in outputs
+        ]
+        output_dtypes = [numpy_dtype_for_elem_type(t) for t in output_elem_types]
+        output_shapes = [tuple(tensors[name].shape) for name in outputs]
+
+        compiler = _compiler_command(cc)
+        cases = _generate_compare_inputs(tensors, inputs, quant, random_cases, seed)
+        case_results: List[CompareCaseResult] = []
+
+        with tempfile.TemporaryDirectory(prefix="onnx_codegen_compare_") as build_dir_name:
+            build_dir = Path(build_dir_name)
+            main_c_path = build_dir / "main.c"
+            exe_path = build_dir / "compare_model"
+            main_c_path.write_text(
+                _render_compare_main(prefix, input_elem_types, output_elem_types),
+                encoding="utf-8",
+            )
+
+            compile_cmd = [
+                compiler,
+                "-std=c99",
+                str(main_c_path),
+                str(model_c_path),
+            ]
+            if kernels_c_path.exists():
+                compile_cmd.append(str(kernels_c_path))
+            compile_cmd += [
+                "-I",
+                str(out_dir),
+                "-lm",
+                "-o",
+                str(exe_path),
+            ]
+            compile_res = subprocess.run(
+                compile_cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if compile_res.returncode != 0:
+                raise CodegenError(
+                    "Failed to compile generated C for comparison.\n"
+                    + compile_res.stderr
+                )
+
+            for case_name, c_inputs in cases:
+                case_dir = build_dir / case_name
+                case_dir.mkdir(parents=True, exist_ok=True)
+                for idx, arr in enumerate(c_inputs):
+                    arr.tofile(case_dir / f"input_{idx}.bin")
+
+                run_res = subprocess.run(
+                    [str(exe_path)],
+                    cwd=case_dir,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if run_res.returncode != 0:
+                    raise CodegenError(
+                        f"Generated C comparison executable failed for case '{case_name}'.\n"
+                        + run_res.stderr
+                    )
+
+                c_outputs: List[np.ndarray] = []
+                for idx, (dtype, shape) in enumerate(zip(output_dtypes, output_shapes)):
+                    raw = np.fromfile(case_dir / f"output_{idx}.bin", dtype=dtype)
+                    expected = int(np.prod(shape, dtype=np.int64))
+                    if raw.size != expected:
+                        raise CodegenError(
+                            f"Output '{idx}' size mismatch in case '{case_name}': "
+                            f"expected {expected} values, got {raw.size}."
+                        )
+                    c_outputs.append(raw.reshape(shape))
+
+                ref_feed = _prepare_reference_feed(inputs, ref_tensors, c_inputs)
+                ref_outputs = ref_eval.run(None, ref_feed)
+
+                case_match = True
+                case_max_abs_diff = 0.0
+                for c_out, ref_out in zip(c_outputs, ref_outputs):
+                    ref_arr = np.asarray(ref_out)
+                    if c_out.shape != ref_arr.shape:
+                        case_match = False
+                        case_max_abs_diff = float("inf")
+                        break
+                    diff = np.abs(
+                        c_out.astype(np.float64) - ref_arr.astype(np.float64)
+                    )
+                    max_abs_diff = float(np.max(diff)) if diff.size else 0.0
+                    case_max_abs_diff = max(case_max_abs_diff, max_abs_diff)
+                    if not np.allclose(
+                        c_out.astype(np.float64),
+                        ref_arr.astype(np.float64),
+                        rtol=0.0,
+                        atol=atol,
+                    ):
+                        case_match = False
+
+                case_results.append(
+                    CompareCaseResult(
+                        name=case_name,
+                        matches=case_match,
+                        max_abs_diff=case_max_abs_diff,
+                    )
+                )
+
+        return CompareResult(
+            matches=all(case.matches for case in case_results),
+            cases=case_results,
+        )
+    finally:
+        if tmp_dir is not None:
+            tmp_dir.cleanup()
+        if ref_tmp_dir is not None:
+            ref_tmp_dir.cleanup()
+
+
 def generate_library(
     onnx_path: Path,
     out_dir: Path,
@@ -1872,17 +2661,21 @@ def generate_library(
     skip_shape_inference: bool,
     custom_kernels_header: Optional[str] = None,
     quant: Optional[QuantConfig] = None,
-) -> Tuple[Path, Path, Path, int, int, int]:
+) -> GenerationResult:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     resolved_onnx, tmp_dir = _resolve_onnx_path(onnx_path)
     try:
         model = read_model(resolved_onnx, skip_shape_inference=skip_shape_inference)
+        model = sanitize_quantized_model(model, quant)
         tensors, const_arrays, nodes, inputs, outputs = build_graph(model)
 
         # Fuse Mul→Add→Div→Floor→Clip into RequantShift (or identity Clip).
         if quant:
             nodes = _fuse_requant(nodes, const_arrays, tensors)
+
+        _retype_integer_valued_float_constants(tensors, const_arrays, nodes)
+        _assign_quantized_runtime_tensor_types(tensors, const_arrays, nodes, inputs, quant)
 
         # Identify constants that are inlined at codegen time (never
         # referenced as weight symbols in the generated C).  These still
@@ -1906,10 +2699,14 @@ def generate_library(
         weight_arrays = {
             k: v for k, v in const_arrays.items() if k not in inlined_consts
         }
-
-        model_h = render_model_header(prefix, inputs, outputs, tensors)
+        _, buf_pool = _compute_buffer_assignments(
+            tensors, nodes, inputs, outputs, const_arrays, quant
+        )
+        model_h = render_model_header(prefix, inputs, outputs, tensors, quant)
+        kernels_h = render_kernels_header(prefix, quant)
+        kernels_c = render_kernels_source(prefix, custom_kernels_header, quant)
         weights_h, int8_weight_names = render_weights_header(
-            prefix, weight_arrays, quant
+            prefix, weight_arrays, tensors, quant
         )
         model_c, layer_keys = render_model_source(
             prefix,
@@ -1926,24 +2723,60 @@ def generate_library(
 
         model_h_path = out_dir / f"{prefix}_model.h"
         model_c_path = out_dir / f"{prefix}_model.c"
+        kernels_h_path = out_dir / f"{prefix}_kernels.h"
+        kernels_c_path = out_dir / f"{prefix}_kernels.c"
         weights_h_path = out_dir / f"{prefix}_weights.h"
         layer_cfg_h_path = out_dir / f"{prefix}_layer_cfg.h"
 
         model_h_path.write_text(model_h, encoding="utf-8")
         model_c_path.write_text(model_c, encoding="utf-8")
+        kernels_h_path.write_text(kernels_h, encoding="utf-8")
+        kernels_c_path.write_text(kernels_c, encoding="utf-8")
         weights_h_path.write_text(weights_h, encoding="utf-8")
         # Only overwrite layer_cfg.h if it doesn't exist — the user
         # may have hand-edited it to disable specific layers.
         if not layer_cfg_h_path.exists():
             layer_cfg_h_path.write_text(layer_cfg_h, encoding="utf-8")
 
-        return (
-            model_h_path,
-            model_c_path,
-            weights_h_path,
-            len(inputs),
-            len(outputs),
-            len(nodes),
+        weights_bytes = int(sum(arr.nbytes for arr in weight_arrays.values()))
+        inlined_const_bytes = int(
+            sum(const_arrays[name].nbytes for name in inlined_consts if name in const_arrays)
+        )
+        scratch_bytes = int(
+            sum(numel * _ctype_size(ctype) for numel, ctype in buf_pool.values())
+        )
+        input_bytes = int(
+            sum(
+                tensors[name].numel
+                * elem_size_for_elem_type(runtime_elem_type(tensors[name].elem_type, quant))
+                for name in inputs
+            )
+        )
+        output_bytes = int(
+            sum(
+                tensors[name].numel
+                * elem_size_for_elem_type(runtime_elem_type(tensors[name].elem_type, quant))
+                for name in outputs
+            )
+        )
+
+        return GenerationResult(
+            model_h_path=model_h_path,
+            model_c_path=model_c_path,
+            weights_h_path=weights_h_path,
+            kernels_h_path=kernels_h_path,
+            kernels_c_path=kernels_c_path,
+            n_inputs=len(inputs),
+            n_outputs=len(outputs),
+            n_nodes=len(nodes),
+            memory=MemoryBreakdown(
+                weights_bytes=weights_bytes,
+                scratch_bytes=scratch_bytes,
+                input_bytes=input_bytes,
+                output_bytes=output_bytes,
+                inlined_const_bytes=inlined_const_bytes,
+                num_scratch_buffers=len(buf_pool),
+            ),
         )
     finally:
         if tmp_dir is not None:

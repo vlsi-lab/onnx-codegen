@@ -3,7 +3,14 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .core import generate_library, sanitize_symbol, QuantConfig
+from .core import (
+    CompareResult,
+    GenerationResult,
+    QuantConfig,
+    compare_generated_c_to_onnx,
+    generate_library,
+    sanitize_symbol,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,7 +53,74 @@ def parse_args() -> argparse.Namespace:
             "exceed the target range."
         ),
     )
+    parser.add_argument(
+        "--compare",
+        action="store_true",
+        help=(
+            "Compile the generated C and compare its outputs against the ONNX "
+            "reference model using a temporary main.c harness."
+        ),
+    )
+    parser.add_argument(
+        "--compare-onnx",
+        type=Path,
+        default=None,
+        help=(
+            "Optional ONNX model used only as comparison reference. "
+            "Useful when generating C from an integer-form model but comparing "
+            "against the original float-parameter ONNX."
+        ),
+    )
+    parser.add_argument(
+        "--compare-random-cases",
+        type=int,
+        default=2,
+        help="Number of random input cases to run in addition to the zero-input case.",
+    )
+    parser.add_argument(
+        "--compare-seed",
+        type=int,
+        default=0,
+        help="Seed used to generate random comparison inputs.",
+    )
+    parser.add_argument(
+        "--cc",
+        type=str,
+        default=None,
+        help="C compiler used by --compare (default: $CC or gcc).",
+    )
     return parser.parse_args()
+
+
+def _print_compare_summary(result: CompareResult) -> None:
+    status = "PASS" if result.matches else "FAIL"
+    print(f"Comparison: {status}")
+    for case in result.cases:
+        verdict = "ok" if case.matches else "mismatch"
+        print(
+            f"  - {case.name}: {verdict} (max_abs_diff={case.max_abs_diff:.6g})"
+        )
+
+
+def _format_bytes(n: int) -> str:
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n} B ({n / 1024.0:.1f} KiB)"
+    return f"{n} B ({n / (1024.0 * 1024.0):.2f} MiB)"
+
+
+def _print_memory_breakdown(result: GenerationResult) -> None:
+    mem = result.memory
+    print("Memory breakdown:")
+    print(f"  - Weights/header consts: {_format_bytes(mem.weights_bytes)}")
+    print(f"  - Inlined consts: {_format_bytes(mem.inlined_const_bytes)}")
+    print(f"  - Scratch buffers: {_format_bytes(mem.scratch_bytes)}")
+    print(f"  - Inputs: {_format_bytes(mem.input_bytes)}")
+    print(f"  - Outputs: {_format_bytes(mem.output_bytes)}")
+    print(f"  - Total consts: {_format_bytes(mem.total_const_bytes)}")
+    print(f"  - Total runtime: {_format_bytes(mem.total_runtime_bytes)}")
+    print(f"  - Total estimated model memory: {_format_bytes(mem.total_bytes)}")
 
 
 def main() -> int:
@@ -57,19 +131,39 @@ def main() -> int:
 
     prefix = sanitize_symbol(args.prefix if args.prefix else onnx_path.stem.lower())
     quant = QuantConfig.parse(args.quant) if args.quant else None
-    model_h_path, model_c_path, weights_h_path, n_inputs, n_outputs, n_nodes = (
-        generate_library(
+    result = generate_library(
+        onnx_path=onnx_path,
+        out_dir=args.out_dir,
+        prefix=prefix,
+        skip_shape_inference=args.skip_shape_inference,
+        custom_kernels_header=args.custom_kernels_header,
+        quant=quant,
+    )
+
+    print(f"Generated: {result.model_h_path}")
+    print(f"Generated: {result.model_c_path}")
+    if result.kernels_h_path.exists():
+        print(f"Generated: {result.kernels_h_path}")
+    if result.kernels_c_path.exists():
+        print(f"Generated: {result.kernels_c_path}")
+    print(f"Generated: {result.weights_h_path}")
+    print(
+        f"Inputs: {result.n_inputs}, Outputs: {result.n_outputs}, Nodes: {result.n_nodes}"
+    )
+    _print_memory_breakdown(result)
+    if args.compare:
+        result = compare_generated_c_to_onnx(
             onnx_path=onnx_path,
             out_dir=args.out_dir,
             prefix=prefix,
+            reference_onnx_path=args.compare_onnx,
             skip_shape_inference=args.skip_shape_inference,
-            custom_kernels_header=args.custom_kernels_header,
             quant=quant,
+            random_cases=args.compare_random_cases,
+            seed=args.compare_seed,
+            cc=args.cc,
         )
-    )
-
-    print(f"Generated: {model_h_path}")
-    print(f"Generated: {model_c_path}")
-    print(f"Generated: {weights_h_path}")
-    print(f"Inputs: {n_inputs}, Outputs: {n_outputs}, Nodes: {n_nodes}")
+        _print_compare_summary(result)
+        if not result.matches:
+            return 1
     return 0
