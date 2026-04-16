@@ -530,9 +530,10 @@ static void conv1d_ncw(
     }
 }
 
-/* Same as conv1d_ncw but weights are stored as int8_t. */
+/* Same as conv1d_ncw but weights are stored as int8_t.
+ * Bias is int32_t to match the 32-bit accumulator used by quantized conv layers. */
 static void conv1d_ncw_i8w(
-    const ONNXCG_ACT_T* x, const int8_t* w, const float* b, ONNXCG_ACT_T* y,
+    const ONNXCG_ACT_T* x, const int8_t* w, const int32_t* b, ONNXCG_ACT_T* y,
     int n, int cin, int lin,
     int cout, int k,
     int stride, int pad_l, int pad_r, int dilation, int groups, int lout) {
@@ -543,7 +544,7 @@ static void conv1d_ncw_i8w(
         for (int oc = 0; oc < cout; ++oc) {
             int g = oc / cout_g;
             for (int ox = 0; ox < lout; ++ox) {
-                float acc = b ? b[oc] : 0.0f;
+                float acc = b ? (float)b[oc] : 0.0f;
                 for (int ic = 0; ic < cin_g; ++ic) {
                     int ic_abs = g * cin_g + ic;
                     for (int kk = 0; kk < k; ++kk) {

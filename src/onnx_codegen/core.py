@@ -834,20 +834,35 @@ def _build_weight_definitions(
             f32 = flat.astype(np.float32)
 
             if forced_weight_ctype and forced_weight_ctype != "float":
-                # Quant override: cast float weights to the requested integer type
-                _check_weight_range(name, f32, quant.weight_bits)
+                # Quant override: cast float weights to the requested integer type.
+                # If the rounded values exceed the target range, fall back to
+                # int32_t to preserve precision and emit a warning.
                 np_dt = quant.weight_np_dtype
-                clamped = np.clip(
-                    np.round(f32),
-                    np.iinfo(np_dt).min,
-                    np.iinfo(np_dt).max,
-                ).astype(np_dt)
-                vals = ", ".join(str(int(v)) for v in clamped)
-                defs.append(
-                    f"static const {forced_weight_ctype} {sym}[{flat.size}] = {{{vals}}};"
-                )
-                if quant.weight_bits == 8:
-                    int8_names.add(name)
+                rounded = np.round(f32)
+                lo = int(np.iinfo(np_dt).min)
+                hi = int(np.iinfo(np_dt).max)
+                vmin, vmax = float(np.min(rounded)), float(np.max(rounded))
+                if vmin < lo or vmax > hi:
+                    warnings.warn(
+                        f"Weight '{name}': value range [{vmin:.4g}, {vmax:.4g}] exceeds "
+                        f"int{quant.weight_bits} range [{lo}, {hi}]. "
+                        f"Storing as int32_t to preserve precision.",
+                        stacklevel=3,
+                    )
+                    int32_arr = rounded.astype(np.int32)
+                    vals = ", ".join(str(int(v)) for v in int32_arr)
+                    defs.append(
+                        f"static const int32_t {sym}[{flat.size}] = {{{vals}}};"
+                    )
+                    # Not added to int8_names; caller must handle int32_t pointer type
+                else:
+                    casted = rounded.astype(np_dt)
+                    vals = ", ".join(str(int(v)) for v in casted)
+                    defs.append(
+                        f"static const {forced_weight_ctype} {sym}[{flat.size}] = {{{vals}}};"
+                    )
+                    if quant.weight_bits == 8:
+                        int8_names.add(name)
             elif _float_array_as_int8(f32):
                 # Store integer-valued weights as int8_t (4x smaller)
                 vals = ", ".join(str(int(v)) for v in f32)
