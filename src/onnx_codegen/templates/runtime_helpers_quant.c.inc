@@ -125,6 +125,58 @@ static void tensor_add_broadcast_act_act_i32(
     }
 }
 
+static void tensor_add_broadcast_act_act_clip_to_act(
+    const ONNXCG_ACT_T* a, const int* a_dims, int a_rank,
+    const ONNXCG_ACT_T* b, const int* b_dims, int b_rank,
+    ONNXCG_ACT_T* out, const int* out_dims, int out_rank,
+    int32_t min_v, int32_t max_v) {
+    size_t out_n = tensor_numel(out_dims, out_rank);
+    size_t a_strides[8] = {0};
+    size_t b_strides[8] = {0};
+    size_t out_strides[8] = {0};
+
+    if (out_rank > 8) return;
+
+    out_strides[out_rank - 1] = 1;
+    for (int i = out_rank - 2; i >= 0; --i) {
+        out_strides[i] = out_strides[i + 1] * (size_t)out_dims[i + 1];
+    }
+
+    if (a_rank > 0) {
+        a_strides[a_rank - 1] = 1;
+        for (int i = a_rank - 2; i >= 0; --i) {
+            a_strides[i] = a_strides[i + 1] * (size_t)a_dims[i + 1];
+        }
+    }
+    if (b_rank > 0) {
+        b_strides[b_rank - 1] = 1;
+        for (int i = b_rank - 2; i >= 0; --i) {
+            b_strides[i] = b_strides[i + 1] * (size_t)b_dims[i + 1];
+        }
+    }
+
+    for (size_t linear = 0; linear < out_n; ++linear) {
+        size_t rem = linear;
+        size_t a_off = 0;
+        size_t b_off = 0;
+        for (int od = 0; od < out_rank; ++od) {
+            int idx = (int)(rem / out_strides[od]);
+            rem %= out_strides[od];
+
+            int ad = od - (out_rank - a_rank);
+            if (ad >= 0 && a_rank > 0 && a_dims[ad] != 1) {
+                a_off += (size_t)idx * a_strides[ad];
+            }
+            int bd = od - (out_rank - b_rank);
+            if (bd >= 0 && b_rank > 0 && b_dims[bd] != 1) {
+                b_off += (size_t)idx * b_strides[bd];
+            }
+        }
+        int32_t sum = (int32_t)a[a_off] + (int32_t)b[b_off];
+        out[linear] = clamp_i32_to_act(clamp_i32(sum, min_v, max_v));
+    }
+}
+
 static void tensor_add_broadcast_i32(
     const int32_t* a, const int* a_dims, int a_rank,
     const int32_t* b, const int* b_dims, int b_rank,

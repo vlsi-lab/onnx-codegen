@@ -690,6 +690,107 @@ def _fuse_requant(
     return result
 
 
+def _fuse_zero_pad_into_conv1d(
+    nodes: List[NodeOp],
+    const_arrays: Dict[str, np.ndarray],
+    tensors: Dict[str, TensorInfo],
+    outputs: Sequence[str],
+) -> List[NodeOp]:
+    """Fold Pad(constant=0) into a following Conv1D when safe."""
+    if not nodes:
+        return nodes
+
+    consumers: Dict[str, int] = {}
+    for node in nodes:
+        for inp in node.inputs:
+            if inp:
+                consumers[inp] = consumers.get(inp, 0) + 1
+
+    graph_outputs = set(outputs)
+    result: List[NodeOp] = []
+    i = 0
+    while i < len(nodes):
+        pad = nodes[i]
+        conv = nodes[i + 1] if i + 1 < len(nodes) else None
+
+        can_fuse = (
+            pad.op_type == "Pad"
+            and conv is not None
+            and conv.op_type == "Conv"
+            and len(pad.outputs) >= 1
+            and len(pad.inputs) >= 1
+            and len(conv.inputs) >= 1
+            and pad.outputs[0]
+            and conv.inputs[0] == pad.outputs[0]
+        )
+        if not can_fuse:
+            result.append(pad)
+            i += 1
+            continue
+
+        pad_out = pad.outputs[0]
+        pad_in = pad.inputs[0]
+        x = tensors.get(pad_in)
+        if (
+            x is None
+            or x.rank != 3
+            or pad_out in graph_outputs
+            or consumers.get(pad_out, 0) != 1
+        ):
+            result.append(pad)
+            i += 1
+            continue
+
+        rank = x.rank
+        if len(pad.inputs) >= 2 and pad.inputs[1] in const_arrays:
+            pads_raw = const_arrays[pad.inputs[1]].reshape(-1)
+            pads = [int(v) for v in pads_raw]
+        else:
+            pads = get_attr_ints(pad.attrs, "pads", [0] * (2 * rank))
+        if len(pads) != 2 * rank:
+            result.append(pad)
+            i += 1
+            continue
+
+        mode = str(pad.attrs.get("mode", "constant"))
+        pad_value = 0.0
+        if len(pad.inputs) >= 3 and pad.inputs[2] in const_arrays:
+            pad_value = float(const_arrays[pad.inputs[2]].reshape(-1)[0])
+        if mode != "constant" or pad_value != 0.0:
+            result.append(pad)
+            i += 1
+            continue
+
+        pad_begin = pads[:rank]
+        pad_end = pads[rank:]
+        if any(v != 0 for v in pad_begin[:-1]) or any(v != 0 for v in pad_end[:-1]):
+            result.append(pad)
+            i += 1
+            continue
+
+        conv_pads = get_attr_ints(conv.attrs, "pads", [0, 0])
+        if len(conv_pads) != 2:
+            result.append(pad)
+            i += 1
+            continue
+
+        fused_conv = NodeOp(
+            op_type=conv.op_type,
+            name=conv.name,
+            inputs=[pad_in] + conv.inputs[1:],
+            outputs=list(conv.outputs),
+            attrs=dict(conv.attrs),
+        )
+        fused_conv.attrs["pads"] = [
+            conv_pads[0] + pad_begin[-1],
+            conv_pads[1] + pad_end[-1],
+        ]
+        result.append(fused_conv)
+        i += 2
+
+    return result
+
+
 def _try_match_requant(
     nodes: List[NodeOp],
     start: int,
@@ -1258,8 +1359,35 @@ def _compute_buffer_assignments(
             death[name] = birth.get(name, 0)
 
     fused_conv_outputs: Set[str] = set()
+    fused_add_outputs: Set[str] = set()
     for i, node in enumerate(nodes):
         if node.op_type != "Conv":
+            if node.op_type != "Add":
+                continue
+            nxt = nodes[i + 1] if i + 1 < len(nodes) else None
+            if (
+                nxt is None
+                or nxt.op_type != "Clip"
+                or quant is None
+                or not quant.act_bits
+            ):
+                continue
+            add_out = node.outputs[0] if node.outputs else None
+            clip_out = nxt.outputs[0] if nxt.outputs else None
+            if (
+                not add_out
+                or add_out not in nxt.inputs
+                or not clip_out
+                or tensors[add_out].elem_type != TensorProto.INT32
+                or tensors[node.inputs[0]].elem_type != quantized_onnx_elem_type(quant)
+                or tensors[node.inputs[1]].elem_type != quantized_onnx_elem_type(quant)
+                or tensors[clip_out].elem_type != quantized_onnx_elem_type(quant)
+            ):
+                continue
+            for add_in in node.inputs[:2]:
+                if add_in and add_in in death:
+                    death[add_in] = max(death[add_in], i + 1)
+            fused_add_outputs.add(add_out)
             continue
         nxt = nodes[i + 1] if i + 1 < len(nodes) else None
         if nxt is None or nxt.op_type != "RequantShift":
@@ -1276,6 +1404,7 @@ def _compute_buffer_assignments(
             fused_conv_outputs.add(conv_out)
 
     scratch -= fused_conv_outputs
+    scratch -= fused_add_outputs
 
     # Group by C element type so we never alias across types.
     # When quant overrides activations, float tensors become act_ctype.
@@ -1711,27 +1840,72 @@ def render_model_source(
             )
 
         elif op == "Add":
-            if quant and quant.act_bits and out_info.elem_type == TensorProto.INT32:
-                a_type = tensors[ins[0]].elem_type
-                b_type = tensors[ins[1]].elem_type
-                if a_type == quant_act_elem_type and b_type == quant_act_elem_type:
-                    add_func = "tensor_add_broadcast_act_act_i32"
-                elif a_type == TensorProto.INT32 and b_type == TensorProto.INT32:
-                    add_func = "tensor_add_broadcast_i32"
-                else:
-                    raise CodegenError(
-                        f"Quantized Add type combination ({a_type}, {b_type}) "
-                        f"is unsupported in node '{node.name}'"
-                    )
-            else:
-                add_func = "tensor_add_broadcast"
-            lines.append(
-                f"    {add_func}("
-                f"{tensor_expr(ins[0])}, {shape_expr(ins[0])}, {rank_expr(ins[0])}, "
-                f"{tensor_expr(ins[1])}, {shape_expr(ins[1])}, {rank_expr(ins[1])}, "
-                f"{tensor_expr(out0)}, {shape_expr(out0)}, {rank_expr(out0)}"
-                ");"
+            next_nd = nodes[node_idx + 1] if node_idx + 1 < len(nodes) else None
+            fuse_clip = (
+                quant is not None
+                and quant.act_bits
+                and out_info.elem_type == TensorProto.INT32
+                and next_nd is not None
+                and next_nd.op_type == "Clip"
+                and out0 in next_nd.inputs
+                and tensors[ins[0]].elem_type == quant_act_elem_type
+                and tensors[ins[1]].elem_type == quant_act_elem_type
+                and tensors[next_nd.outputs[0]].elem_type == quant_act_elem_type
             )
+            if fuse_clip:
+                clip_out = next_nd.outputs[0]
+                if (
+                    tensor_expr(ins[0]) == tensor_expr(clip_out)
+                    or tensor_expr(ins[1]) == tensor_expr(clip_out)
+                ):
+                    fuse_clip = False
+
+            if fuse_clip:
+                min_v = 0.0
+                max_v = 255.0
+                clip_ins = [x for x in next_nd.inputs if x]
+                if len(clip_ins) >= 3:
+                    if clip_ins[1] in const_arrays:
+                        min_v = float(const_arrays[clip_ins[1]].reshape(-1)[0])
+                    if clip_ins[2] in const_arrays:
+                        max_v = float(const_arrays[clip_ins[2]].reshape(-1)[0])
+                else:
+                    min_raw = next_nd.attrs.get("min", 0.0)
+                    max_raw = next_nd.attrs.get("max", 255.0)
+                    min_v = float(cast(Union[int, float], min_raw))
+                    max_v = float(cast(Union[int, float], max_raw))
+
+                lines.append(
+                    "    tensor_add_broadcast_act_act_clip_to_act("
+                    f"{tensor_expr(ins[0])}, {shape_expr(ins[0])}, {rank_expr(ins[0])}, "
+                    f"{tensor_expr(ins[1])}, {shape_expr(ins[1])}, {rank_expr(ins[1])}, "
+                    f"{tensor_expr(clip_out)}, {shape_expr(clip_out)}, {rank_expr(clip_out)}, "
+                    f"{int(min_v)}, {int(max_v)}"
+                    ");"
+                )
+                node_idx += 1
+            else:
+                if quant and quant.act_bits and out_info.elem_type == TensorProto.INT32:
+                    a_type = tensors[ins[0]].elem_type
+                    b_type = tensors[ins[1]].elem_type
+                    if a_type == quant_act_elem_type and b_type == quant_act_elem_type:
+                        add_func = "tensor_add_broadcast_act_act_i32"
+                    elif a_type == TensorProto.INT32 and b_type == TensorProto.INT32:
+                        add_func = "tensor_add_broadcast_i32"
+                    else:
+                        raise CodegenError(
+                            f"Quantized Add type combination ({a_type}, {b_type}) "
+                            f"is unsupported in node '{node.name}'"
+                        )
+                else:
+                    add_func = "tensor_add_broadcast"
+                lines.append(
+                    f"    {add_func}("
+                    f"{tensor_expr(ins[0])}, {shape_expr(ins[0])}, {rank_expr(ins[0])}, "
+                    f"{tensor_expr(ins[1])}, {shape_expr(ins[1])}, {rank_expr(ins[1])}, "
+                    f"{tensor_expr(out0)}, {shape_expr(out0)}, {rank_expr(out0)}"
+                    ");"
+                )
 
         elif op == "Mul":
             lines.append(
@@ -2500,6 +2674,7 @@ def compare_generated_c_to_onnx(
         tensors, const_arrays, nodes, inputs, outputs = build_graph(codegen_model)
         if quant:
             nodes = _fuse_requant(nodes, const_arrays, tensors)
+        nodes = _fuse_zero_pad_into_conv1d(nodes, const_arrays, tensors, outputs)
         _retype_integer_valued_float_constants(tensors, const_arrays, nodes)
         _assign_quantized_runtime_tensor_types(tensors, const_arrays, nodes, inputs, quant)
 
@@ -2673,6 +2848,7 @@ def generate_library(
         # Fuse Mul→Add→Div→Floor→Clip into RequantShift (or identity Clip).
         if quant:
             nodes = _fuse_requant(nodes, const_arrays, tensors)
+        nodes = _fuse_zero_pad_into_conv1d(nodes, const_arrays, tensors, outputs)
 
         _retype_integer_valued_float_constants(tensors, const_arrays, nodes)
         _assign_quantized_runtime_tensor_types(tensors, const_arrays, nodes, inputs, quant)
