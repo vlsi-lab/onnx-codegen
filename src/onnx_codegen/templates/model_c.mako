@@ -5,13 +5,16 @@
 % if custom_kernels_header:
 #include "${custom_kernels_header}"
 % endif
+#include "${prefix}_kernels.h"
 
+% if include_math:
 #include <math.h>
+% endif
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
-/* Activation element type used by runtime helpers (default: float). */
+/* Activation element type used by runtime helpers. */
 #ifndef ONNXCG_ACT_T
 #define ONNXCG_ACT_T ${act_ctype}
 #endif
