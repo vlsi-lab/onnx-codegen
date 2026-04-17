@@ -9,6 +9,7 @@ from .core import (
     QuantConfig,
     compare_generated_c_to_onnx,
     generate_library,
+    generate_test_data_header,
     sanitize_symbol,
 )
 
@@ -89,6 +90,27 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="C compiler used by --compare (default: $CC or gcc).",
     )
+    parser.add_argument(
+        "--test-data",
+        action="store_true",
+        help=(
+            "Generate a <prefix>_test_data.h header containing random input "
+            "vectors and golden (expected) outputs computed via the ONNX "
+            "reference evaluator.  Useful for on-target MCU deployment tests."
+        ),
+    )
+    parser.add_argument(
+        "--test-data-cases",
+        type=int,
+        default=2,
+        help="Number of random test-data cases (in addition to the zero-input case).",
+    )
+    parser.add_argument(
+        "--test-data-seed",
+        type=int,
+        default=0,
+        help="RNG seed for test-data generation.",
+    )
     return parser.parse_args()
 
 
@@ -97,9 +119,7 @@ def _print_compare_summary(result: CompareResult) -> None:
     print(f"Comparison: {status}")
     for case in result.cases:
         verdict = "ok" if case.matches else "mismatch"
-        print(
-            f"  - {case.name}: {verdict} (max_abs_diff={case.max_abs_diff:.6g})"
-        )
+        print(f"  - {case.name}: {verdict} (max_abs_diff={case.max_abs_diff:.6g})")
 
 
 def _format_bytes(n: int) -> str:
@@ -151,6 +171,17 @@ def main() -> int:
         f"Inputs: {result.n_inputs}, Outputs: {result.n_outputs}, Nodes: {result.n_nodes}"
     )
     _print_memory_breakdown(result)
+    if args.test_data:
+        td_path = generate_test_data_header(
+            onnx_path=onnx_path,
+            out_dir=args.out_dir,
+            prefix=prefix,
+            skip_shape_inference=args.skip_shape_inference,
+            quant=quant,
+            random_cases=args.test_data_cases,
+            seed=args.test_data_seed,
+        )
+        print(f"Generated: {td_path}")
     if args.compare:
         result = compare_generated_c_to_onnx(
             onnx_path=onnx_path,

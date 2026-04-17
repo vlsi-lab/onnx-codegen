@@ -635,6 +635,7 @@ def _assign_quantized_runtime_tensor_types(
             else:
                 out_info.elem_type = in_type
 
+
 # ---------------------------------------------------------------------------
 # Requant fusion: Mul → Add → Div → Floor → Clip  →  RequantShift
 # ---------------------------------------------------------------------------
@@ -1740,7 +1741,9 @@ def render_model_source(
             return f"{prefix}_w_{safe_tensor_ref(name)}"
         if name in inputs:
             idx = inputs.index(name)
-            ctype = c_type_for_elem_type(runtime_elem_type(tensors[name].elem_type, quant))
+            ctype = c_type_for_elem_type(
+                runtime_elem_type(tensors[name].elem_type, quant)
+            )
             return f"((const {ctype}*)inputs[{idx}])"
         bid = buf_assignments[name]
         return f"{prefix}_scratch_{bid}"
@@ -1854,10 +1857,9 @@ def render_model_source(
             )
             if fuse_clip:
                 clip_out = next_nd.outputs[0]
-                if (
-                    tensor_expr(ins[0]) == tensor_expr(clip_out)
-                    or tensor_expr(ins[1]) == tensor_expr(clip_out)
-                ):
+                if tensor_expr(ins[0]) == tensor_expr(clip_out) or tensor_expr(
+                    ins[1]
+                ) == tensor_expr(clip_out):
                     fuse_clip = False
 
             if fuse_clip:
@@ -2675,8 +2677,11 @@ def compare_generated_c_to_onnx(
         if quant:
             nodes = _fuse_requant(nodes, const_arrays, tensors)
         nodes = _fuse_zero_pad_into_conv1d(nodes, const_arrays, tensors, outputs)
-        _retype_integer_valued_float_constants(tensors, const_arrays, nodes)
-        _assign_quantized_runtime_tensor_types(tensors, const_arrays, nodes, inputs, quant)
+        if quant:
+            _retype_integer_valued_float_constants(tensors, const_arrays, nodes)
+        _assign_quantized_runtime_tensor_types(
+            tensors, const_arrays, nodes, inputs, quant
+        )
 
         ref_model = read_model(
             resolved_ref_onnx, skip_shape_inference=skip_shape_inference
@@ -2720,7 +2725,9 @@ def compare_generated_c_to_onnx(
         cases = _generate_compare_inputs(tensors, inputs, quant, random_cases, seed)
         case_results: List[CompareCaseResult] = []
 
-        with tempfile.TemporaryDirectory(prefix="onnx_codegen_compare_") as build_dir_name:
+        with tempfile.TemporaryDirectory(
+            prefix="onnx_codegen_compare_"
+        ) as build_dir_name:
             build_dir = Path(build_dir_name)
             main_c_path = build_dir / "main.c"
             exe_path = build_dir / "compare_model"
@@ -2797,9 +2804,7 @@ def compare_generated_c_to_onnx(
                         case_match = False
                         case_max_abs_diff = float("inf")
                         break
-                    diff = np.abs(
-                        c_out.astype(np.float64) - ref_arr.astype(np.float64)
-                    )
+                    diff = np.abs(c_out.astype(np.float64) - ref_arr.astype(np.float64))
                     max_abs_diff = float(np.max(diff)) if diff.size else 0.0
                     case_max_abs_diff = max(case_max_abs_diff, max_abs_diff)
                     if not np.allclose(
@@ -2850,8 +2855,11 @@ def generate_library(
             nodes = _fuse_requant(nodes, const_arrays, tensors)
         nodes = _fuse_zero_pad_into_conv1d(nodes, const_arrays, tensors, outputs)
 
-        _retype_integer_valued_float_constants(tensors, const_arrays, nodes)
-        _assign_quantized_runtime_tensor_types(tensors, const_arrays, nodes, inputs, quant)
+        if quant:
+            _retype_integer_valued_float_constants(tensors, const_arrays, nodes)
+        _assign_quantized_runtime_tensor_types(
+            tensors, const_arrays, nodes, inputs, quant
+        )
 
         # Identify constants that are inlined at codegen time (never
         # referenced as weight symbols in the generated C).  These still
@@ -2916,7 +2924,11 @@ def generate_library(
 
         weights_bytes = int(sum(arr.nbytes for arr in weight_arrays.values()))
         inlined_const_bytes = int(
-            sum(const_arrays[name].nbytes for name in inlined_consts if name in const_arrays)
+            sum(
+                const_arrays[name].nbytes
+                for name in inlined_consts
+                if name in const_arrays
+            )
         )
         scratch_bytes = int(
             sum(numel * _ctype_size(ctype) for numel, ctype in buf_pool.values())
@@ -2924,14 +2936,18 @@ def generate_library(
         input_bytes = int(
             sum(
                 tensors[name].numel
-                * elem_size_for_elem_type(runtime_elem_type(tensors[name].elem_type, quant))
+                * elem_size_for_elem_type(
+                    runtime_elem_type(tensors[name].elem_type, quant)
+                )
                 for name in inputs
             )
         )
         output_bytes = int(
             sum(
                 tensors[name].numel
-                * elem_size_for_elem_type(runtime_elem_type(tensors[name].elem_type, quant))
+                * elem_size_for_elem_type(
+                    runtime_elem_type(tensors[name].elem_type, quant)
+                )
                 for name in outputs
             )
         )
@@ -2954,6 +2970,128 @@ def generate_library(
                 num_scratch_buffers=len(buf_pool),
             ),
         )
+    finally:
+        if tmp_dir is not None:
+            tmp_dir.cleanup()
+
+
+def _format_c_array(arr: np.ndarray, ctype: str) -> str:
+    """Format a flat numpy array as a comma-separated C initialiser string."""
+    flat = arr.reshape(-1)
+    if ctype == "float":
+        return ", ".join(c_float_literal(float(v)) for v in flat)
+    return ", ".join(str(int(v)) for v in flat)
+
+
+def generate_test_data_header(
+    onnx_path: Path,
+    out_dir: Path,
+    prefix: str,
+    skip_shape_inference: bool,
+    quant: Optional[QuantConfig] = None,
+    random_cases: int = 2,
+    seed: int = 0,
+) -> Path:
+    """Generate a ``<prefix>_test_data.h`` with random inputs and golden outputs.
+
+    The golden outputs are produced by the ONNX reference evaluator so the
+    generated header can be used to validate the C inference on target MCU
+    hardware.
+    """
+    resolved_onnx, tmp_dir = _resolve_onnx_path(onnx_path)
+    try:
+        # Quantized model – used for C-side types and input generation.
+        model = read_model(resolved_onnx, skip_shape_inference=skip_shape_inference)
+        model = sanitize_quantized_model(model, quant)
+        tensors, const_arrays, nodes, inputs, outputs = build_graph(model)
+        if quant:
+            nodes = _fuse_requant(nodes, const_arrays, tensors)
+        nodes = _fuse_zero_pad_into_conv1d(nodes, const_arrays, tensors, outputs)
+        if quant:
+            _retype_integer_valued_float_constants(tensors, const_arrays, nodes)
+        _assign_quantized_runtime_tensor_types(
+            tensors, const_arrays, nodes, inputs, quant
+        )
+
+        # Reference (float) model – used for golden output computation.
+        ref_model = read_model(resolved_onnx, skip_shape_inference=skip_shape_inference)
+        ref_model = sanitize_quantized_model(ref_model, None)
+        ref_tensors, _, _, _, _ = build_graph(ref_model)
+
+        try:
+            from onnx.reference import ReferenceEvaluator
+        except ImportError as exc:
+            raise CodegenError(
+                "ONNX reference evaluator is unavailable; "
+                "install onnx >= 1.14 with reference support."
+            ) from exc
+
+        ref_eval = ReferenceEvaluator(ref_model)
+
+        cases_data = _generate_compare_inputs(
+            tensors, inputs, quant, random_cases, seed
+        )
+
+        template_cases = []
+        for case_name, c_inputs in cases_data:
+            # Convert C-typed inputs to the float types the reference model expects.
+            ref_feed = _prepare_reference_feed(inputs, ref_tensors, c_inputs)
+            ref_outputs = ref_eval.run(None, ref_feed)
+
+            inp_entries = []
+            for i, (name, arr) in enumerate(zip(inputs, c_inputs)):
+                elem_type = runtime_elem_type(tensors[name].elem_type, quant)
+                ctype = c_type_for_elem_type(elem_type)
+                sym = f"{prefix}_test_{case_name}_input_{i}"
+                inp_entries.append(
+                    {
+                        "ctype": ctype,
+                        "symbol": sym,
+                        "numel": int(arr.size),
+                        "values": _format_c_array(arr, ctype),
+                    }
+                )
+
+            out_entries = []
+            for i, (name, ref_out) in enumerate(zip(outputs, ref_outputs)):
+                elem_type = runtime_elem_type(tensors[name].elem_type, quant)
+                ctype = c_type_for_elem_type(elem_type)
+                ref_arr = np.asarray(ref_out)
+                # Cast to the C-side type so the golden values match the
+                # generated inference output type.
+                target_dtype = numpy_dtype_for_elem_type(elem_type)
+                golden = ref_arr.astype(target_dtype, copy=False)
+                sym = f"{prefix}_test_{case_name}_golden_{i}"
+                out_entries.append(
+                    {
+                        "ctype": ctype,
+                        "symbol": sym,
+                        "numel": int(golden.size),
+                        "values": _format_c_array(golden, ctype),
+                    }
+                )
+
+            template_cases.append(
+                {
+                    "name": case_name,
+                    "inputs": inp_entries,
+                    "outputs": out_entries,
+                }
+            )
+
+        header = render_template(
+            "test_data_h.mako",
+            guard=f"{prefix.upper()}_TEST_DATA_H",
+            prefix=prefix,
+            prefix_upper=prefix.upper(),
+            num_cases=len(template_cases),
+            num_inputs=len(inputs),
+            num_outputs=len(outputs),
+            cases=template_cases,
+        )
+        out_path = out_dir / f"{prefix}_test_data.h"
+        out_path.write_text(header, encoding="utf-8")
+        return out_path
     finally:
         if tmp_dir is not None:
             tmp_dir.cleanup()
