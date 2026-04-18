@@ -10,181 +10,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* ================================================================
- *  PULP Builtin Assembly Implementations (Generated)
- *
- *  Optional assembly implementations of PULP builtin functions
- *  (__builtin_pulp_*). Define PULPNN_USE_ASM before including to use
- *  assembly versions instead of compiler builtins.
- * ================================================================ */
-
-#ifdef PULPNN_USE_ASM
-/* Assembly implementations enabled */
-
-/* Bit Extraction & Manipulation */
-static inline int32_t asm_bextract(int32_t x, uint32_t size, uint32_t off) {
-    int32_t result;
-    asm volatile("p.bextract %0, %1, %2(%3)" : "=r"(result) : "r"(x), "r"(off), "r"(size));
-    return result;
-}
-
-static inline uint32_t asm_bextractu(uint32_t x, uint32_t size, uint32_t off) {
-    uint32_t result;
-    asm volatile("p.bextractu %0, %1, %2(%3)" : "=r"(result) : "r"(x), "r"(off), "r"(size));
-    return result;
-}
-
-static inline int32_t asm_binsert(int32_t x, uint32_t value, uint32_t size, uint32_t off) {
-    int32_t result;
-    asm volatile("p.binsert %0, %1, %2(%3)" : "=r"(result) : "r"(x), "r"(value), "r"(off), "r"(size));
-    return result;
-}
-
-/* Vector Operations */
-static inline int32_t asm_pack4(int32_t a, int32_t b, int32_t c, int32_t d) {
-    int32_t a8 = a & 0xFF, b8 = b & 0xFF, c8 = c & 0xFF, d8 = d & 0xFF;
-    return (d8 << 24) | (c8 << 16) | (b8 << 8) | a8;
-}
-
-static inline uint32_t asm_maxu4(uint32_t a, uint32_t b) {
-    uint32_t result;
-    asm volatile("p.max4 %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
-    return result;
-}
-
-static inline uint32_t asm_minu4(uint32_t a, uint32_t b) {
-    uint32_t result;
-    asm volatile("p.min4 %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
-    return result;
-}
-
-static inline uint32_t asm_avg4(uint32_t a, uint32_t b) {
-    uint32_t result;
-    asm volatile("p.avg4 %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
-    return result;
-}
-
-/* Clipping */
-static inline uint32_t asm_clipu_r(int32_t value, uint32_t maxval) {
-    if (value < 0) return 0;
-    if (value > (int32_t)maxval) return maxval;
-    return (uint32_t)value;
-}
-
-static inline int32_t asm_clip_r(int32_t value, int32_t minval, int32_t maxval) {
-    if (value < minval) return minval;
-    if (value > maxval) return maxval;
-    return value;
-}
-
-/* Bit Operations */
-static inline int32_t asm_fl1(uint32_t x) {
-    int32_t result;
-    asm volatile("p.fl1 %0, %1" : "=r"(result) : "r"(x));
-    return result;
-}
-
-static inline int32_t asm_clb(int32_t x) {
-    int32_t result;
-    asm volatile("p.clb %0, %1" : "=r"(result) : "r"(x));
-    return result;
-}
-
-static inline uint32_t asm_rotr(uint32_t x, uint32_t n) {
-    uint32_t result;
-    asm volatile("p.rotr %0, %1, %2" : "=r"(result) : "r"(x), "r"(n));
-    return result;
-}
-
-/* Dot Products */
-static inline int32_t asm_dotsp4(int32_t a, int32_t b) {
-    int32_t result;
-    asm volatile("p.dotsp4 %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
-    return result;
-}
-
-static inline int32_t asm_sdotusp4(int32_t a, uint32_t b) {
-    int32_t result;
-    asm volatile("p.sdotusp4 %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
-    return result;
-}
-
-static inline uint32_t asm_dotup4(uint32_t a, uint32_t b) {
-    uint32_t result;
-    asm volatile("p.dotup4 %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
-    return result;
-}
-
-/* MAC Operations */
-static inline int32_t asm_mac(int32_t a, int32_t b, int32_t c) {
-    int32_t result = c;
-    asm volatile("p.mac %0, %1, %2" : "+r"(result) : "r"(a), "r"(b));
-    return result;
-}
-
-/* Shift Operations */
-static inline int32_t asm_sra_i(int32_t a, uint32_t shift) {
-    int32_t result;
-    asm volatile("p.sra %0, %1, %2" : "=r"(result) : "r"(a), "r"(shift));
-    return result;
-}
-
-static inline uint32_t asm_srl_i(uint32_t a, uint32_t shift) {
-    uint32_t result;
-    asm volatile("p.srl %0, %1, %2" : "=r"(result) : "r"(a), "r"(shift));
-    return result;
-}
-
-static inline uint32_t asm_sll_i(uint32_t a, uint32_t shift) {
-    uint32_t result;
-    asm volatile("p.sll %0, %1, %2" : "=r"(result) : "r"(a), "r"(shift));
-    return result;
-}
-
-/* Builtin macros - assembly versions */
-#define PULP_BEXTRACT(x,size,off)     asm_bextract(x,size,off)
-#define PULP_BEXTRACTU(x,size,off)    asm_bextractu(x,size,off)
-#define PULP_BINSERT(x,v,size,off)    asm_binsert(x,v,size,off)
-#define PULP_PACK4(a,b,c,d)           asm_pack4(a,b,c,d)
-#define PULP_MAXU4(a,b)               asm_maxu4(a,b)
-#define PULP_MINU4(a,b)               asm_minu4(a,b)
-#define PULP_AVG4(a,b)                asm_avg4(a,b)
-#define PULP_CLIPU_R(x,maxval)        asm_clipu_r(x,maxval)
-#define PULP_CLIP_R(x,minval,maxval)  asm_clip_r(x,minval,maxval)
-#define PULP_FL1(x)                   asm_fl1(x)
-#define PULP_CLB(x)                   asm_clb(x)
-#define PULP_ROTR(x,n)                asm_rotr(x,n)
-#define PULP_DOTSP4(a,b)              asm_dotsp4(a,b)
-#define PULP_SDOTUSP4(a,b)            asm_sdotusp4(a,b)
-#define PULP_DOTUP4(a,b)              asm_dotup4(a,b)
-#define PULP_MAC(a,b,c)               asm_mac(a,b,c)
-#define PULP_SRA_I(a,shift)           asm_sra_i(a,shift)
-#define PULP_SRL_I(a,shift)           asm_srl_i(a,shift)
-#define PULP_SLL_I(a,shift)           asm_sll_i(a,shift)
-
-#else
-/* Builtin macros - compiler builtins (default) */
-#define PULP_BEXTRACT(x,size,off)     __builtin_pulp_bextract(x,size,off)
-#define PULP_BEXTRACTU(x,size,off)    __builtin_pulp_bextractu(x,size,off)
-#define PULP_BINSERT(x,v,size,off)    __builtin_pulp_binsert(x,v,size,off)
-#define PULP_PACK4(a,b,c,d)           __builtin_pulp_pack4(a,b,c,d)
-#define PULP_MAXU4(a,b)               __builtin_pulp_maxu4(a,b)
-#define PULP_MINU4(a,b)               __builtin_pulp_minu4(a,b)
-#define PULP_AVG4(a,b)                __builtin_pulp_avg4(a,b)
-#define PULP_CLIPU_R(x,maxval)        __builtin_pulp_clipu_r(x,maxval)
-#define PULP_CLIP_R(x,minval,maxval)  __builtin_pulp_clip_r(x,minval,maxval)
-#define PULP_FL1(x)                   __builtin_pulp_fl1(x)
-#define PULP_CLB(x)                   __builtin_pulp_clb(x)
-#define PULP_ROTR(x,n)                __builtin_pulp_rotr(x,n)
-#define PULP_DOTSP4(a,b)              __builtin_pulp_dotsp4(a,b)
-#define PULP_SDOTUSP4(a,b)            __builtin_pulp_sdotusp4(a,b)
-#define PULP_DOTUP4(a,b)              __builtin_pulp_dotup4(a,b)
-#define PULP_MAC(a,b,c)               __builtin_pulp_mac(a,b,c)
-#define PULP_SRA_I(a,shift)           __builtin_pulp_sra(a,shift)
-#define PULP_SRL_I(a,shift)           __builtin_pulp_srl(a,shift)
-#define PULP_SLL_I(a,shift)           __builtin_pulp_sll(a,shift)
-#endif
-
 static inline int clamp_int(int x, int lo, int hi) {
     if (x < lo) return lo;
     if (x > hi) return hi;
@@ -210,37 +35,66 @@ static inline ONNXCG_ACT_T cast_i32_to_act(int32_t x) {
 % endif
 
 /* ================================================================
- *  PULP SIMD support.
+ *  CORE-V SIMD support.
  *
- *  Define ONNXCG_PULP to enable __builtin_pulp_sdotusp4 and other
- *  PULP-V extensions (auto-detected when the compiler defines
- *  __PULP__ or __riscv_xpulp).
+ *  Define ONNXCG_COREV_SIMD to enable CORE-V builtin helpers.
+ *
+ *  The generated kernels use CORE-V builtins
+ *  (__builtin_riscv_cv_*) when the required XCV extensions are enabled.
  * ================================================================ */
-#if !defined(ONNXCG_PULP) && (defined(__PULP__) || defined(__riscv_xpulp))
-#define ONNXCG_PULP 1
+#ifndef ONNXCG_HAS_BUILTIN
+#if defined(__has_builtin)
+#define ONNXCG_HAS_BUILTIN(x) __has_builtin(x)
+#else
+#define ONNXCG_HAS_BUILTIN(x) 0
+#endif
 #endif
 
-#ifdef ONNXCG_PULP
-#ifndef ONNXCG_PULP_TYPES_DEFINED
-#define ONNXCG_PULP_TYPES_DEFINED
-typedef int8_t  v4s __attribute__((vector_size(4)));
-typedef uint8_t v4u __attribute__((vector_size(4)));
+#if !defined(ONNXCG_COREV_SIMD) && (defined(__riscv_xcvsimd) || defined(__riscv_xcvalu) || defined(__riscv_xcvmac))
+#define ONNXCG_COREV_SIMD 1
 #endif
-#define ONNXCG_SUMDOTP(b, a, c) __builtin_pulp_sdotusp4(b, a, c)
-#define ONNXCG_CLIP8(x)         __builtin_pulp_clipu_r(x, 255)
+
+#ifdef ONNXCG_COREV_SIMD
+static inline uint32_t onnxcg_pack_bytes4(const uint8_t* src) {
+    return ((uint32_t)src[0])
+        | ((uint32_t)src[1] << 8)
+        | ((uint32_t)src[2] << 16)
+        | ((uint32_t)src[3] << 24);
+}
+
+static inline uint32_t onnxcg_pack_u8x4(const uint8_t* src) {
+    return onnxcg_pack_bytes4(src);
+}
+
+static inline uint32_t onnxcg_pack_i8x4(const int8_t* src) {
+    return onnxcg_pack_bytes4((const uint8_t*)src);
+}
+
+#if ONNXCG_HAS_BUILTIN(__builtin_riscv_cv_simd_sdotusp_b)
+#define ONNXCG_SUMDOTP(b, a, c) __builtin_riscv_cv_simd_sdotusp_b((uint32_t)(b), (uint32_t)(a), (int32_t)(c))
+#define ONNXCG_COREV_HAS_SUMDOTP 1
+#endif
+
+#if ONNXCG_HAS_BUILTIN(__builtin_riscv_cv_alu_clipu)
+#define ONNXCG_CLIP8(x) __builtin_riscv_cv_alu_clipu((uint32_t)(((x) < 0) ? 0 : (x)), 255u)
+#define ONNXCG_COREV_HAS_CLIP8 1
+#endif
+
+#if !defined(ONNXCG_COREV_HAS_SUMDOTP) || !defined(ONNXCG_COREV_HAS_CLIP8)
+#undef ONNXCG_COREV_SIMD
+#endif
 #endif
 
 /* ================================================================
- *  Pulp-NN inspired helpers: im2col + dot products.
+ *  Blocked im2col + dot-product helpers.
  *
  *  im2col gathers one column (cin_g * k elements) per output position,
  *  handling padding with zeros.  The convolution then reduces to a
  *  branch-free matrix-vector product over contiguous memory.
  *
- *  When ONNXCG_PULP is defined the dot products use the hardware
- *  4-element SIMD MAC (__builtin_pulp_sdotusp4) and the output
- *  channel loop uses 4-channel blocking for maximum register reuse,
- *  matching the pulp-nn-1d matmul_4x1 pattern.
+ *  When ONNXCG_COREV_SIMD is defined the dot products use the hardware
+ *  4-element SIMD MAC via CORE-V builtins, and the output channel loop
+ *  uses 4-channel blocking for maximum register reuse.
  * ================================================================ */
 
 % if quant_enabled:
@@ -277,22 +131,51 @@ static void im2col_1d_i32(
 }
 
 /* --- dot: int8 weights x ACT_T (uint8) column -> int32 --- */
-#ifdef ONNXCG_PULP
-static inline int32_t dot_i8_act(const int8_t* a, const ONNXCG_ACT_T* b, int len) {
+#ifdef ONNXCG_COREV_SIMD
+static inline int32_t onnxcg_dot_i8_u8_packed(const int8_t* a, const uint8_t* b, int len) {
     int32_t acc = 0;
     int i = 0;
     for (; i + 3 < len; i += 4) {
-        v4s vecA = *((v4s*)(a + i));
-        v4u vecB = *((v4u*)(b + i));
-        acc = ONNXCG_SUMDOTP(vecB, vecA, acc);
+        uint32_t packed_a = onnxcg_pack_i8x4(a + i);
+        uint32_t packed_b = onnxcg_pack_u8x4(b + i);
+        acc = ONNXCG_SUMDOTP(packed_b, packed_a, acc);
     }
     while (i < len) {
-        int8_t inA = a[i]; uint8_t inB = b[i];
-        asm volatile("": : :"memory");
-        acc += (int32_t)inA * (int32_t)inB;
+        acc += (int32_t)a[i] * (int32_t)b[i];
         i++;
     }
     return acc;
+}
+
+static inline void onnxcg_matmul_4x1_i8_u8_packed(
+    const int8_t* pA, int col_len, const uint8_t* pB,
+    int32_t* s0, int32_t* s1, int32_t* s2, int32_t* s3)
+{
+    const int8_t* pA2 = pA  + col_len;
+    const int8_t* pA3 = pA2 + col_len;
+    const int8_t* pA4 = pA3 + col_len;
+    int32_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+    int j = 0;
+    for (; j + 3 < col_len; j += 4) {
+        uint32_t packed_b = onnxcg_pack_u8x4(pB + j);
+        a0 = ONNXCG_SUMDOTP(packed_b, onnxcg_pack_i8x4(pA + j), a0);
+        a1 = ONNXCG_SUMDOTP(packed_b, onnxcg_pack_i8x4(pA2 + j), a1);
+        a2 = ONNXCG_SUMDOTP(packed_b, onnxcg_pack_i8x4(pA3 + j), a2);
+        a3 = ONNXCG_SUMDOTP(packed_b, onnxcg_pack_i8x4(pA4 + j), a3);
+    }
+    while (j < col_len) {
+        uint8_t in_b = pB[j];
+        a0 += pA[j] * in_b;
+        a1 += pA2[j] * in_b;
+        a2 += pA3[j] * in_b;
+        a3 += pA4[j] * in_b;
+        j++;
+    }
+    *s0 = a0; *s1 = a1; *s2 = a2; *s3 = a3;
+}
+
+static inline int32_t dot_i8_act(const int8_t* a, const ONNXCG_ACT_T* b, int len) {
+    return onnxcg_dot_i8_u8_packed(a, (const uint8_t*)b, len);
 }
 #else
 static inline int32_t dot_i8_act(const int8_t* a, const ONNXCG_ACT_T* b, int len) {
@@ -325,43 +208,19 @@ static inline int32_t dot_i8_i32(const int8_t* a, const int32_t* b, int len) {
     return acc;
 }
 
-#ifdef ONNXCG_PULP
+#ifdef ONNXCG_COREV_SIMD
 /* ----------------------------------------------------------------
- *  pulp-nn-1d style 4x1 matmul helper (4 output channels, 1 column).
+ *  4x1 blocked matmul helper (4 output channels, 1 column).
  *  Computes dot(w_row[oc..oc+3], col) using 4 simultaneous
- *  accumulators with SIMD MACs, matching pulp_nn_matmul_4x1_uint8.
+ *  accumulators with SIMD MACs.
  * ---------------------------------------------------------------- */
-static inline void pulp_matmul_4x1_i8_act(
+static inline void onnxcg_matmul_4x1_i8_act(
     const int8_t* pA, int col_len, const ONNXCG_ACT_T* col,
     int32_t* s0, int32_t* s1, int32_t* s2, int32_t* s3)
 {
-    const int8_t* pA2 = pA  + col_len;
-    const int8_t* pA3 = pA2 + col_len;
-    const int8_t* pA4 = pA3 + col_len;
-    const ONNXCG_ACT_T* pB = col;
-    int32_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
-    int j = 0;
-    for (; j + 3 < col_len; j += 4) {
-        v4s vecA  = *((v4s*)(pA  + j));
-        v4s vecA2 = *((v4s*)(pA2 + j));
-        v4s vecA3 = *((v4s*)(pA3 + j));
-        v4s vecA4 = *((v4s*)(pA4 + j));
-        v4u vecB  = *((v4u*)(pB  + j));
-        a0 = ONNXCG_SUMDOTP(vecB, vecA,  a0);
-        a1 = ONNXCG_SUMDOTP(vecB, vecA2, a1);
-        a2 = ONNXCG_SUMDOTP(vecB, vecA3, a2);
-        a3 = ONNXCG_SUMDOTP(vecB, vecA4, a3);
-    }
-    while (j < col_len) {
-        int8_t wA = pA[j], wA2 = pA2[j], wA3 = pA3[j], wA4 = pA4[j];
-        uint8_t bB = pB[j];
-        asm volatile("": : :"memory");
-        a0 += wA * bB; a1 += wA2 * bB; a2 += wA3 * bB; a3 += wA4 * bB;
-        j++;
-    }
-    *s0 = a0; *s1 = a1; *s2 = a2; *s3 = a3;
+    onnxcg_matmul_4x1_i8_u8_packed(pA, col_len, (const uint8_t*)col, s0, s1, s2, s3);
 }
-#endif /* ONNXCG_PULP */
+#endif /* ONNXCG_COREV_SIMD */
 % else:
 /* --- im2col for ONNXCG_ACT_T (float) inputs, 1-D conv --- */
 static void im2col_1d_act(
@@ -426,54 +285,17 @@ static inline float dot_i8f_act(const int8_t* a, const ONNXCG_ACT_T* b, int len)
 }
 
 /* --- dot: int8 weights x uint8 column -> int32 --- */
-#ifdef ONNXCG_PULP
+#ifdef ONNXCG_COREV_SIMD
 static inline int32_t dot_i8_u8(const int8_t* a, const uint8_t* b, int len) {
-    int32_t acc = 0;
-    int i = 0;
-    for (; i + 3 < len; i += 4) {
-        v4s vecA = *((v4s*)(a + i));
-        v4u vecB = *((v4u*)(b + i));
-        acc = ONNXCG_SUMDOTP(vecB, vecA, acc);
-    }
-    while (i < len) {
-        int8_t inA = a[i]; uint8_t inB = b[i];
-        asm volatile("": : :"memory");
-        acc += (int32_t)inA * (int32_t)inB;
-        i++;
-    }
-    return acc;
+    return onnxcg_dot_i8_u8_packed(a, b, len);
 }
 
 /* 4x1 matmul helper for non-quant uint8 requant path. */
-static inline void pulp_matmul_4x1_i8_u8(
+static inline void onnxcg_matmul_4x1_i8_u8(
     const int8_t* pA, int col_len, const uint8_t* col,
     int32_t* s0, int32_t* s1, int32_t* s2, int32_t* s3)
 {
-    const int8_t* pA2 = pA  + col_len;
-    const int8_t* pA3 = pA2 + col_len;
-    const int8_t* pA4 = pA3 + col_len;
-    const uint8_t* pB = col;
-    int32_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
-    int j = 0;
-    for (; j + 3 < col_len; j += 4) {
-        v4s vecA  = *((v4s*)(pA  + j));
-        v4s vecA2 = *((v4s*)(pA2 + j));
-        v4s vecA3 = *((v4s*)(pA3 + j));
-        v4s vecA4 = *((v4s*)(pA4 + j));
-        v4u vecB  = *((v4u*)(pB  + j));
-        a0 = ONNXCG_SUMDOTP(vecB, vecA,  a0);
-        a1 = ONNXCG_SUMDOTP(vecB, vecA2, a1);
-        a2 = ONNXCG_SUMDOTP(vecB, vecA3, a2);
-        a3 = ONNXCG_SUMDOTP(vecB, vecA4, a3);
-    }
-    while (j < col_len) {
-        int8_t wA = pA[j], wA2 = pA2[j], wA3 = pA3[j], wA4 = pA4[j];
-        uint8_t bB = pB[j];
-        asm volatile("": : :"memory");
-        a0 += wA * bB; a1 += wA2 * bB; a2 += wA3 * bB; a3 += wA4 * bB;
-        j++;
-    }
-    *s0 = a0; *s1 = a1; *s2 = a2; *s3 = a3;
+    onnxcg_matmul_4x1_i8_u8_packed(pA, col_len, col, s0, s1, s2, s3);
 }
 #else
 static inline int32_t dot_i8_u8(const int8_t* a, const uint8_t* b, int len) {
@@ -578,12 +400,12 @@ void ${prefix}_kernel_conv1d_ncw_i8w(
             for (int ox = 0; ox < lout; ++ox) {
                 ONNXCG_ACT_T col[col_len];
                 im2col_1d_act(x_g, cin_g, lin, k, ox, stride, pad_l, dilation, col);
-#ifdef ONNXCG_PULP
+#ifdef ONNXCG_COREV_SIMD
                 int oc_l = 0;
                 for (; oc_l + 3 < cout_g; oc_l += 4) {
                     int oc = g * cout_g + oc_l;
                     int32_t s0, s1, s2, s3;
-                    pulp_matmul_4x1_i8_act(w + (size_t)oc * col_len, col_len, col, &s0, &s1, &s2, &s3);
+                    onnxcg_matmul_4x1_i8_act(w + (size_t)oc * col_len, col_len, col, &s0, &s1, &s2, &s3);
                     y_bn[(oc)   * lout + ox] = (b ? b[oc]   : 0) + s0;
                     y_bn[(oc+1) * lout + ox] = (b ? b[oc+1] : 0) + s1;
                     y_bn[(oc+2) * lout + ox] = (b ? b[oc+2] : 0) + s2;
@@ -654,12 +476,12 @@ void ${prefix}_kernel_conv1d_ncw_i8w_requant(
             for (int ox = 0; ox < lout; ++ox) {
                 ONNXCG_ACT_T col[col_len];
                 im2col_1d_act(x_g, cin_g, lin, k, ox, stride, pad_l, dilation, col);
-#ifdef ONNXCG_PULP
+#ifdef ONNXCG_COREV_SIMD
                 int oc_l = 0;
                 for (; oc_l + 3 < cout_g; oc_l += 4) {
                     int oc = g * cout_g + oc_l;
                     int32_t s0, s1, s2, s3;
-                    pulp_matmul_4x1_i8_act(w + (size_t)oc * col_len, col_len, col, &s0, &s1, &s2, &s3);
+                    onnxcg_matmul_4x1_i8_act(w + (size_t)oc * col_len, col_len, col, &s0, &s1, &s2, &s3);
                     y_bn[(oc)   * lout + ox] = (ONNXCG_ACT_T)ONNXCG_CLIP8((s0 * kappa[oc]   + lambda[oc])   >> shift);
                     y_bn[(oc+1) * lout + ox] = (ONNXCG_ACT_T)ONNXCG_CLIP8((s1 * kappa[oc+1] + lambda[oc+1]) >> shift);
                     y_bn[(oc+2) * lout + ox] = (ONNXCG_ACT_T)ONNXCG_CLIP8((s2 * kappa[oc+2] + lambda[oc+2]) >> shift);
@@ -876,12 +698,12 @@ void ${prefix}_kernel_conv1d_ncw_i8w_requant(
             for (int ox = 0; ox < lout; ++ox) {
                 uint8_t col[col_len];
                 im2col_1d_u8(x_g, cin_g, lin, k, ox, stride, pad_l, dilation, col);
-#ifdef ONNXCG_PULP
+#ifdef ONNXCG_COREV_SIMD
                 int oc_l = 0;
                 for (; oc_l + 3 < cout_g; oc_l += 4) {
                     int oc = g * cout_g + oc_l;
                     int32_t s0, s1, s2, s3;
-                    pulp_matmul_4x1_i8_u8(w + (size_t)oc * col_len, col_len, col, &s0, &s1, &s2, &s3);
+                    onnxcg_matmul_4x1_i8_u8(w + (size_t)oc * col_len, col_len, col, &s0, &s1, &s2, &s3);
                     y_bn[(oc)   * lout + ox] = (uint8_t)ONNXCG_CLIP8((s0 * kappa[oc]   + lambda[oc])   >> shift);
                     y_bn[(oc+1) * lout + ox] = (uint8_t)ONNXCG_CLIP8((s1 * kappa[oc+1] + lambda[oc+1]) >> shift);
                     y_bn[(oc+2) * lout + ox] = (uint8_t)ONNXCG_CLIP8((s2 * kappa[oc+2] + lambda[oc+2]) >> shift);

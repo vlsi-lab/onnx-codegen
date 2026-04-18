@@ -2014,7 +2014,7 @@ def render_model_source(
             pads = get_attr_ints(node.attrs, "pads", [0] * (2 * (x.rank - 2)))
 
             # Look ahead: fuse Conv → RequantShift into a single kernel call
-            # (pulp-nn style: accumulate int32 → requant → uint8 in one pass).
+            # (accumulate int32 → requant → uint8 in one pass).
             next_nd = nodes[node_idx + 1] if node_idx + 1 < len(nodes) else None
             fuse_rq = (
                 next_nd is not None
