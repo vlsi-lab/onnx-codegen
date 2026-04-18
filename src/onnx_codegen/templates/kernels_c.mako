@@ -10,6 +10,181 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* ================================================================
+ *  PULP Builtin Assembly Implementations (Generated)
+ *
+ *  Optional assembly implementations of PULP builtin functions
+ *  (__builtin_pulp_*). Define PULPNN_USE_ASM before including to use
+ *  assembly versions instead of compiler builtins.
+ * ================================================================ */
+
+#ifdef PULPNN_USE_ASM
+/* Assembly implementations enabled */
+
+/* Bit Extraction & Manipulation */
+static inline int32_t asm_bextract(int32_t x, uint32_t size, uint32_t off) {
+    int32_t result;
+    asm volatile("p.bextract %0, %1, %2(%3)" : "=r"(result) : "r"(x), "r"(off), "r"(size));
+    return result;
+}
+
+static inline uint32_t asm_bextractu(uint32_t x, uint32_t size, uint32_t off) {
+    uint32_t result;
+    asm volatile("p.bextractu %0, %1, %2(%3)" : "=r"(result) : "r"(x), "r"(off), "r"(size));
+    return result;
+}
+
+static inline int32_t asm_binsert(int32_t x, uint32_t value, uint32_t size, uint32_t off) {
+    int32_t result;
+    asm volatile("p.binsert %0, %1, %2(%3)" : "=r"(result) : "r"(x), "r"(value), "r"(off), "r"(size));
+    return result;
+}
+
+/* Vector Operations */
+static inline int32_t asm_pack4(int32_t a, int32_t b, int32_t c, int32_t d) {
+    int32_t a8 = a & 0xFF, b8 = b & 0xFF, c8 = c & 0xFF, d8 = d & 0xFF;
+    return (d8 << 24) | (c8 << 16) | (b8 << 8) | a8;
+}
+
+static inline uint32_t asm_maxu4(uint32_t a, uint32_t b) {
+    uint32_t result;
+    asm volatile("p.max4 %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
+    return result;
+}
+
+static inline uint32_t asm_minu4(uint32_t a, uint32_t b) {
+    uint32_t result;
+    asm volatile("p.min4 %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
+    return result;
+}
+
+static inline uint32_t asm_avg4(uint32_t a, uint32_t b) {
+    uint32_t result;
+    asm volatile("p.avg4 %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
+    return result;
+}
+
+/* Clipping */
+static inline uint32_t asm_clipu_r(int32_t value, uint32_t maxval) {
+    if (value < 0) return 0;
+    if (value > (int32_t)maxval) return maxval;
+    return (uint32_t)value;
+}
+
+static inline int32_t asm_clip_r(int32_t value, int32_t minval, int32_t maxval) {
+    if (value < minval) return minval;
+    if (value > maxval) return maxval;
+    return value;
+}
+
+/* Bit Operations */
+static inline int32_t asm_fl1(uint32_t x) {
+    int32_t result;
+    asm volatile("p.fl1 %0, %1" : "=r"(result) : "r"(x));
+    return result;
+}
+
+static inline int32_t asm_clb(int32_t x) {
+    int32_t result;
+    asm volatile("p.clb %0, %1" : "=r"(result) : "r"(x));
+    return result;
+}
+
+static inline uint32_t asm_rotr(uint32_t x, uint32_t n) {
+    uint32_t result;
+    asm volatile("p.rotr %0, %1, %2" : "=r"(result) : "r"(x), "r"(n));
+    return result;
+}
+
+/* Dot Products */
+static inline int32_t asm_dotsp4(int32_t a, int32_t b) {
+    int32_t result;
+    asm volatile("p.dotsp4 %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
+    return result;
+}
+
+static inline int32_t asm_sdotusp4(int32_t a, uint32_t b) {
+    int32_t result;
+    asm volatile("p.sdotusp4 %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
+    return result;
+}
+
+static inline uint32_t asm_dotup4(uint32_t a, uint32_t b) {
+    uint32_t result;
+    asm volatile("p.dotup4 %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
+    return result;
+}
+
+/* MAC Operations */
+static inline int32_t asm_mac(int32_t a, int32_t b, int32_t c) {
+    int32_t result = c;
+    asm volatile("p.mac %0, %1, %2" : "+r"(result) : "r"(a), "r"(b));
+    return result;
+}
+
+/* Shift Operations */
+static inline int32_t asm_sra_i(int32_t a, uint32_t shift) {
+    int32_t result;
+    asm volatile("p.sra %0, %1, %2" : "=r"(result) : "r"(a), "r"(shift));
+    return result;
+}
+
+static inline uint32_t asm_srl_i(uint32_t a, uint32_t shift) {
+    uint32_t result;
+    asm volatile("p.srl %0, %1, %2" : "=r"(result) : "r"(a), "r"(shift));
+    return result;
+}
+
+static inline uint32_t asm_sll_i(uint32_t a, uint32_t shift) {
+    uint32_t result;
+    asm volatile("p.sll %0, %1, %2" : "=r"(result) : "r"(a), "r"(shift));
+    return result;
+}
+
+/* Builtin macros - assembly versions */
+#define PULP_BEXTRACT(x,size,off)     asm_bextract(x,size,off)
+#define PULP_BEXTRACTU(x,size,off)    asm_bextractu(x,size,off)
+#define PULP_BINSERT(x,v,size,off)    asm_binsert(x,v,size,off)
+#define PULP_PACK4(a,b,c,d)           asm_pack4(a,b,c,d)
+#define PULP_MAXU4(a,b)               asm_maxu4(a,b)
+#define PULP_MINU4(a,b)               asm_minu4(a,b)
+#define PULP_AVG4(a,b)                asm_avg4(a,b)
+#define PULP_CLIPU_R(x,maxval)        asm_clipu_r(x,maxval)
+#define PULP_CLIP_R(x,minval,maxval)  asm_clip_r(x,minval,maxval)
+#define PULP_FL1(x)                   asm_fl1(x)
+#define PULP_CLB(x)                   asm_clb(x)
+#define PULP_ROTR(x,n)                asm_rotr(x,n)
+#define PULP_DOTSP4(a,b)              asm_dotsp4(a,b)
+#define PULP_SDOTUSP4(a,b)            asm_sdotusp4(a,b)
+#define PULP_DOTUP4(a,b)              asm_dotup4(a,b)
+#define PULP_MAC(a,b,c)               asm_mac(a,b,c)
+#define PULP_SRA_I(a,shift)           asm_sra_i(a,shift)
+#define PULP_SRL_I(a,shift)           asm_srl_i(a,shift)
+#define PULP_SLL_I(a,shift)           asm_sll_i(a,shift)
+
+#else
+/* Builtin macros - compiler builtins (default) */
+#define PULP_BEXTRACT(x,size,off)     __builtin_pulp_bextract(x,size,off)
+#define PULP_BEXTRACTU(x,size,off)    __builtin_pulp_bextractu(x,size,off)
+#define PULP_BINSERT(x,v,size,off)    __builtin_pulp_binsert(x,v,size,off)
+#define PULP_PACK4(a,b,c,d)           __builtin_pulp_pack4(a,b,c,d)
+#define PULP_MAXU4(a,b)               __builtin_pulp_maxu4(a,b)
+#define PULP_MINU4(a,b)               __builtin_pulp_minu4(a,b)
+#define PULP_AVG4(a,b)                __builtin_pulp_avg4(a,b)
+#define PULP_CLIPU_R(x,maxval)        __builtin_pulp_clipu_r(x,maxval)
+#define PULP_CLIP_R(x,minval,maxval)  __builtin_pulp_clip_r(x,minval,maxval)
+#define PULP_FL1(x)                   __builtin_pulp_fl1(x)
+#define PULP_CLB(x)                   __builtin_pulp_clb(x)
+#define PULP_ROTR(x,n)                __builtin_pulp_rotr(x,n)
+#define PULP_DOTSP4(a,b)              __builtin_pulp_dotsp4(a,b)
+#define PULP_SDOTUSP4(a,b)            __builtin_pulp_sdotusp4(a,b)
+#define PULP_DOTUP4(a,b)              __builtin_pulp_dotup4(a,b)
+#define PULP_MAC(a,b,c)               __builtin_pulp_mac(a,b,c)
+#define PULP_SRA_I(a,shift)           __builtin_pulp_sra(a,shift)
+#define PULP_SRL_I(a,shift)           __builtin_pulp_srl(a,shift)
+#define PULP_SLL_I(a,shift)           __builtin_pulp_sll(a,shift)
+#endif
+
 static inline int clamp_int(int x, int lo, int hi) {
     if (x < lo) return lo;
     if (x > hi) return hi;
@@ -34,17 +209,315 @@ static inline ONNXCG_ACT_T cast_i32_to_act(int32_t x) {
 }
 % endif
 
+/* ================================================================
+ *  PULP SIMD support.
+ *
+ *  Define ONNXCG_PULP to enable __builtin_pulp_sdotusp4 and other
+ *  PULP-V extensions (auto-detected when the compiler defines
+ *  __PULP__ or __riscv_xpulp).
+ * ================================================================ */
+#if !defined(ONNXCG_PULP) && (defined(__PULP__) || defined(__riscv_xpulp))
+#define ONNXCG_PULP 1
+#endif
+
+#ifdef ONNXCG_PULP
+#ifndef ONNXCG_PULP_TYPES_DEFINED
+#define ONNXCG_PULP_TYPES_DEFINED
+typedef int8_t  v4s __attribute__((vector_size(4)));
+typedef uint8_t v4u __attribute__((vector_size(4)));
+#endif
+#define ONNXCG_SUMDOTP(b, a, c) __builtin_pulp_sdotusp4(b, a, c)
+#define ONNXCG_CLIP8(x)         __builtin_pulp_clipu_r(x, 255)
+#endif
+
+/* ================================================================
+ *  Pulp-NN inspired helpers: im2col + dot products.
+ *
+ *  im2col gathers one column (cin_g * k elements) per output position,
+ *  handling padding with zeros.  The convolution then reduces to a
+ *  branch-free matrix-vector product over contiguous memory.
+ *
+ *  When ONNXCG_PULP is defined the dot products use the hardware
+ *  4-element SIMD MAC (__builtin_pulp_sdotusp4) and the output
+ *  channel loop uses 4-channel blocking for maximum register reuse,
+ *  matching the pulp-nn-1d matmul_4x1 pattern.
+ * ================================================================ */
+
+% if quant_enabled:
+/* --- im2col for ONNXCG_ACT_T (uint8) inputs, 1-D conv --- */
+static void im2col_1d_act(
+    const ONNXCG_ACT_T* x_group, int cin_g, int lin, int k,
+    int ox, int stride, int pad_l, int dilation,
+    ONNXCG_ACT_T* col)
+{
+    for (int ic = 0; ic < cin_g; ++ic) {
+        const ONNXCG_ACT_T* x_ic = x_group + (size_t)ic * lin;
+        ONNXCG_ACT_T* col_ic = col + ic * k;
+        for (int kk = 0; kk < k; ++kk) {
+            int ix = ox * stride - pad_l + kk * dilation;
+            col_ic[kk] = (ix >= 0 && ix < lin) ? x_ic[ix] : 0;
+        }
+    }
+}
+
+/* --- im2col for int32_t inputs, 1-D conv --- */
+static void im2col_1d_i32(
+    const int32_t* x_group, int cin_g, int lin, int k,
+    int ox, int stride, int pad_l, int dilation,
+    int32_t* col)
+{
+    for (int ic = 0; ic < cin_g; ++ic) {
+        const int32_t* x_ic = x_group + (size_t)ic * lin;
+        int32_t* col_ic = col + ic * k;
+        for (int kk = 0; kk < k; ++kk) {
+            int ix = ox * stride - pad_l + kk * dilation;
+            col_ic[kk] = (ix >= 0 && ix < lin) ? x_ic[ix] : 0;
+        }
+    }
+}
+
+/* --- dot: int8 weights x ACT_T (uint8) column -> int32 --- */
+#ifdef ONNXCG_PULP
+static inline int32_t dot_i8_act(const int8_t* a, const ONNXCG_ACT_T* b, int len) {
+    int32_t acc = 0;
+    int i = 0;
+    for (; i + 3 < len; i += 4) {
+        v4s vecA = *((v4s*)(a + i));
+        v4u vecB = *((v4u*)(b + i));
+        acc = ONNXCG_SUMDOTP(vecB, vecA, acc);
+    }
+    while (i < len) {
+        int8_t inA = a[i]; uint8_t inB = b[i];
+        asm volatile("": : :"memory");
+        acc += (int32_t)inA * (int32_t)inB;
+        i++;
+    }
+    return acc;
+}
+#else
+static inline int32_t dot_i8_act(const int8_t* a, const ONNXCG_ACT_T* b, int len) {
+    int32_t acc = 0;
+    int i = 0;
+    for (; i + 3 < len; i += 4) {
+        acc += (int32_t)a[i]     * (int32_t)b[i];
+        acc += (int32_t)a[i + 1] * (int32_t)b[i + 1];
+        acc += (int32_t)a[i + 2] * (int32_t)b[i + 2];
+        acc += (int32_t)a[i + 3] * (int32_t)b[i + 3];
+    }
+    for (; i < len; ++i)
+        acc += (int32_t)a[i] * (int32_t)b[i];
+    return acc;
+}
+#endif
+
+/* --- dot: int8 weights x int32 column -> int32 (no SIMD benefit) --- */
+static inline int32_t dot_i8_i32(const int8_t* a, const int32_t* b, int len) {
+    int32_t acc = 0;
+    int i = 0;
+    for (; i + 3 < len; i += 4) {
+        acc += (int32_t)a[i]     * b[i];
+        acc += (int32_t)a[i + 1] * b[i + 1];
+        acc += (int32_t)a[i + 2] * b[i + 2];
+        acc += (int32_t)a[i + 3] * b[i + 3];
+    }
+    for (; i < len; ++i)
+        acc += (int32_t)a[i] * b[i];
+    return acc;
+}
+
+#ifdef ONNXCG_PULP
+/* ----------------------------------------------------------------
+ *  pulp-nn-1d style 4x1 matmul helper (4 output channels, 1 column).
+ *  Computes dot(w_row[oc..oc+3], col) using 4 simultaneous
+ *  accumulators with SIMD MACs, matching pulp_nn_matmul_4x1_uint8.
+ * ---------------------------------------------------------------- */
+static inline void pulp_matmul_4x1_i8_act(
+    const int8_t* pA, int col_len, const ONNXCG_ACT_T* col,
+    int32_t* s0, int32_t* s1, int32_t* s2, int32_t* s3)
+{
+    const int8_t* pA2 = pA  + col_len;
+    const int8_t* pA3 = pA2 + col_len;
+    const int8_t* pA4 = pA3 + col_len;
+    const ONNXCG_ACT_T* pB = col;
+    int32_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+    int j = 0;
+    for (; j + 3 < col_len; j += 4) {
+        v4s vecA  = *((v4s*)(pA  + j));
+        v4s vecA2 = *((v4s*)(pA2 + j));
+        v4s vecA3 = *((v4s*)(pA3 + j));
+        v4s vecA4 = *((v4s*)(pA4 + j));
+        v4u vecB  = *((v4u*)(pB  + j));
+        a0 = ONNXCG_SUMDOTP(vecB, vecA,  a0);
+        a1 = ONNXCG_SUMDOTP(vecB, vecA2, a1);
+        a2 = ONNXCG_SUMDOTP(vecB, vecA3, a2);
+        a3 = ONNXCG_SUMDOTP(vecB, vecA4, a3);
+    }
+    while (j < col_len) {
+        int8_t wA = pA[j], wA2 = pA2[j], wA3 = pA3[j], wA4 = pA4[j];
+        uint8_t bB = pB[j];
+        asm volatile("": : :"memory");
+        a0 += wA * bB; a1 += wA2 * bB; a2 += wA3 * bB; a3 += wA4 * bB;
+        j++;
+    }
+    *s0 = a0; *s1 = a1; *s2 = a2; *s3 = a3;
+}
+#endif /* ONNXCG_PULP */
+% else:
+/* --- im2col for ONNXCG_ACT_T (float) inputs, 1-D conv --- */
+static void im2col_1d_act(
+    const ONNXCG_ACT_T* x_group, int cin_g, int lin, int k,
+    int ox, int stride, int pad_l, int dilation,
+    ONNXCG_ACT_T* col)
+{
+    for (int ic = 0; ic < cin_g; ++ic) {
+        const ONNXCG_ACT_T* x_ic = x_group + (size_t)ic * lin;
+        ONNXCG_ACT_T* col_ic = col + ic * k;
+        for (int kk = 0; kk < k; ++kk) {
+            int ix = ox * stride - pad_l + kk * dilation;
+            col_ic[kk] = (ix >= 0 && ix < lin) ? x_ic[ix] : ONNXCG_ACT(0);
+        }
+    }
+}
+
+/* --- im2col for uint8_t inputs (used by non-quant requant path) --- */
+static void im2col_1d_u8(
+    const uint8_t* x_group, int cin_g, int lin, int k,
+    int ox, int stride, int pad_l, int dilation,
+    uint8_t* col)
+{
+    for (int ic = 0; ic < cin_g; ++ic) {
+        const uint8_t* x_ic = x_group + (size_t)ic * lin;
+        uint8_t* col_ic = col + ic * k;
+        for (int kk = 0; kk < k; ++kk) {
+            int ix = ox * stride - pad_l + kk * dilation;
+            col_ic[kk] = (ix >= 0 && ix < lin) ? x_ic[ix] : 0;
+        }
+    }
+}
+
+/* --- 4x-unrolled dot: float weights x ACT_T column -> float --- */
+static inline float dot_f_act(const float* a, const ONNXCG_ACT_T* b, int len) {
+    float acc = 0.0f;
+    int i = 0;
+    for (; i + 3 < len; i += 4) {
+        acc += a[i]     * (float)b[i];
+        acc += a[i + 1] * (float)b[i + 1];
+        acc += a[i + 2] * (float)b[i + 2];
+        acc += a[i + 3] * (float)b[i + 3];
+    }
+    for (; i < len; ++i)
+        acc += a[i] * (float)b[i];
+    return acc;
+}
+
+/* --- 4x-unrolled dot: int8 weights x ACT_T column -> float --- */
+static inline float dot_i8f_act(const int8_t* a, const ONNXCG_ACT_T* b, int len) {
+    float acc = 0.0f;
+    int i = 0;
+    for (; i + 3 < len; i += 4) {
+        acc += (float)a[i]     * (float)b[i];
+        acc += (float)a[i + 1] * (float)b[i + 1];
+        acc += (float)a[i + 2] * (float)b[i + 2];
+        acc += (float)a[i + 3] * (float)b[i + 3];
+    }
+    for (; i < len; ++i)
+        acc += (float)a[i] * (float)b[i];
+    return acc;
+}
+
+/* --- dot: int8 weights x uint8 column -> int32 --- */
+#ifdef ONNXCG_PULP
+static inline int32_t dot_i8_u8(const int8_t* a, const uint8_t* b, int len) {
+    int32_t acc = 0;
+    int i = 0;
+    for (; i + 3 < len; i += 4) {
+        v4s vecA = *((v4s*)(a + i));
+        v4u vecB = *((v4u*)(b + i));
+        acc = ONNXCG_SUMDOTP(vecB, vecA, acc);
+    }
+    while (i < len) {
+        int8_t inA = a[i]; uint8_t inB = b[i];
+        asm volatile("": : :"memory");
+        acc += (int32_t)inA * (int32_t)inB;
+        i++;
+    }
+    return acc;
+}
+
+/* 4x1 matmul helper for non-quant uint8 requant path. */
+static inline void pulp_matmul_4x1_i8_u8(
+    const int8_t* pA, int col_len, const uint8_t* col,
+    int32_t* s0, int32_t* s1, int32_t* s2, int32_t* s3)
+{
+    const int8_t* pA2 = pA  + col_len;
+    const int8_t* pA3 = pA2 + col_len;
+    const int8_t* pA4 = pA3 + col_len;
+    const uint8_t* pB = col;
+    int32_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+    int j = 0;
+    for (; j + 3 < col_len; j += 4) {
+        v4s vecA  = *((v4s*)(pA  + j));
+        v4s vecA2 = *((v4s*)(pA2 + j));
+        v4s vecA3 = *((v4s*)(pA3 + j));
+        v4s vecA4 = *((v4s*)(pA4 + j));
+        v4u vecB  = *((v4u*)(pB  + j));
+        a0 = ONNXCG_SUMDOTP(vecB, vecA,  a0);
+        a1 = ONNXCG_SUMDOTP(vecB, vecA2, a1);
+        a2 = ONNXCG_SUMDOTP(vecB, vecA3, a2);
+        a3 = ONNXCG_SUMDOTP(vecB, vecA4, a3);
+    }
+    while (j < col_len) {
+        int8_t wA = pA[j], wA2 = pA2[j], wA3 = pA3[j], wA4 = pA4[j];
+        uint8_t bB = pB[j];
+        asm volatile("": : :"memory");
+        a0 += wA * bB; a1 += wA2 * bB; a2 += wA3 * bB; a3 += wA4 * bB;
+        j++;
+    }
+    *s0 = a0; *s1 = a1; *s2 = a2; *s3 = a3;
+}
+#else
+static inline int32_t dot_i8_u8(const int8_t* a, const uint8_t* b, int len) {
+    int32_t acc = 0;
+    int i = 0;
+    for (; i + 3 < len; i += 4) {
+        acc += (int32_t)a[i]     * (int32_t)b[i];
+        acc += (int32_t)a[i + 1] * (int32_t)b[i + 1];
+        acc += (int32_t)a[i + 2] * (int32_t)b[i + 2];
+        acc += (int32_t)a[i + 3] * (int32_t)b[i + 3];
+    }
+    for (; i < len; ++i)
+        acc += (int32_t)a[i] * (int32_t)b[i];
+    return acc;
+}
+#endif
+% endif
+
+/* ================================================================
+ *  MatMul / Gemm kernels – cache-friendly loop order (i->p->j)
+ *  with 4x unrolling on the inner j-loop.
+ * ================================================================ */
+
 #ifndef ONNXCG_DISABLE_DEFAULT_LINEAR_IMPL
 void ${prefix}_kernel_matmul_2d(
     const ONNXCG_ACT_T* a, const ONNXCG_ACT_T* b, ONNXCG_ACT_T* out,
     int m, int k, int n) {
     for (int i = 0; i < m; ++i) {
-        for (int j = 0; j < n; ++j) {
-            ONNXCG_ACT_T acc = ONNXCG_ACT(0);
-            for (int p = 0; p < k; ++p) {
-                acc += a[i * k + p] * b[p * n + j];
+        ONNXCG_ACT_T* out_row = out + i * n;
+        const ONNXCG_ACT_T* a_row = a + i * k;
+        for (int j = 0; j < n; ++j) out_row[j] = ONNXCG_ACT(0);
+        for (int p = 0; p < k; ++p) {
+            ONNXCG_ACT_T a_val = a_row[p];
+            const ONNXCG_ACT_T* b_row = b + p * n;
+            int j = 0;
+            for (; j + 3 < n; j += 4) {
+                out_row[j]     += a_val * b_row[j];
+                out_row[j + 1] += a_val * b_row[j + 1];
+                out_row[j + 2] += a_val * b_row[j + 2];
+                out_row[j + 3] += a_val * b_row[j + 3];
             }
-            out[i * n + j] = acc;
+            for (; j < n; ++j) {
+                out_row[j] += a_val * b_row[j];
+            }
         }
     }
 }
@@ -79,6 +552,14 @@ void ${prefix}_kernel_gemm_2d(
 }
 #endif
 
+/* ================================================================
+ *  Conv1D kernels – im2col + matmul decomposition.
+ *
+ *  For each output position the im2col column (cin_g * k elements) is
+ *  built once, then reused across all output channels.  The inner
+ *  dot-product loop is branch-free and 4x-unrolled.
+ * ================================================================ */
+
 % if quant_enabled:
 #ifndef ONNXCG_DISABLE_DEFAULT_CONV1D_IMPL
 void ${prefix}_kernel_conv1d_ncw_i8w(
@@ -89,23 +570,39 @@ void ${prefix}_kernel_conv1d_ncw_i8w(
     (void)pad_r;
     int cin_g = cin / groups;
     int cout_g = cout / groups;
+    int col_len = cin_g * k;
     for (int bn = 0; bn < n; ++bn) {
-        for (int oc = 0; oc < cout; ++oc) {
-            int g = oc / cout_g;
+        for (int g = 0; g < groups; ++g) {
+            const ONNXCG_ACT_T* x_g = x + ((size_t)bn * cin + (size_t)g * cin_g) * lin;
+            int32_t* y_bn = y + (size_t)bn * cout * lout;
             for (int ox = 0; ox < lout; ++ox) {
-                int32_t acc = b ? b[oc] : 0;
-                for (int ic = 0; ic < cin_g; ++ic) {
-                    int ic_abs = g * cin_g + ic;
-                    for (int kk = 0; kk < k; ++kk) {
-                        int ix = ox * stride - pad_l + kk * dilation;
-                        if (ix < 0 || ix >= lin) continue;
-                        size_t x_idx = (size_t)bn * cin * lin + (size_t)ic_abs * lin + (size_t)ix;
-                        size_t w_idx = (size_t)oc * cin_g * k + (size_t)ic * k + (size_t)kk;
-                        acc += (int32_t)x[x_idx] * (int32_t)w[w_idx];
-                    }
+                ONNXCG_ACT_T col[col_len];
+                im2col_1d_act(x_g, cin_g, lin, k, ox, stride, pad_l, dilation, col);
+#ifdef ONNXCG_PULP
+                int oc_l = 0;
+                for (; oc_l + 3 < cout_g; oc_l += 4) {
+                    int oc = g * cout_g + oc_l;
+                    int32_t s0, s1, s2, s3;
+                    pulp_matmul_4x1_i8_act(w + (size_t)oc * col_len, col_len, col, &s0, &s1, &s2, &s3);
+                    y_bn[(oc)   * lout + ox] = (b ? b[oc]   : 0) + s0;
+                    y_bn[(oc+1) * lout + ox] = (b ? b[oc+1] : 0) + s1;
+                    y_bn[(oc+2) * lout + ox] = (b ? b[oc+2] : 0) + s2;
+                    y_bn[(oc+3) * lout + ox] = (b ? b[oc+3] : 0) + s3;
                 }
-                size_t y_idx = (size_t)bn * cout * lout + (size_t)oc * lout + (size_t)ox;
-                y[y_idx] = acc;
+                for (; oc_l < cout_g; ++oc_l) {
+                    int oc = g * cout_g + oc_l;
+                    int32_t acc = b ? b[oc] : 0;
+                    acc += dot_i8_act(w + (size_t)oc * col_len, col, col_len);
+                    y_bn[oc * lout + ox] = acc;
+                }
+#else
+                for (int oc_l = 0; oc_l < cout_g; ++oc_l) {
+                    int oc = g * cout_g + oc_l;
+                    int32_t acc = b ? b[oc] : 0;
+                    acc += dot_i8_act(w + (size_t)oc * col_len, col, col_len);
+                    y_bn[oc * lout + ox] = acc;
+                }
+#endif
             }
         }
     }
@@ -119,23 +616,20 @@ void ${prefix}_kernel_conv1d_ncw_i32x_i8w(
     (void)pad_r;
     int cin_g = cin / groups;
     int cout_g = cout / groups;
+    int col_len = cin_g * k;
     for (int bn = 0; bn < n; ++bn) {
-        for (int oc = 0; oc < cout; ++oc) {
-            int g = oc / cout_g;
+        for (int g = 0; g < groups; ++g) {
+            const int32_t* x_g = x + ((size_t)bn * cin + (size_t)g * cin_g) * lin;
+            int32_t* y_bn = y + (size_t)bn * cout * lout;
             for (int ox = 0; ox < lout; ++ox) {
-                int32_t acc = b ? b[oc] : 0;
-                for (int ic = 0; ic < cin_g; ++ic) {
-                    int ic_abs = g * cin_g + ic;
-                    for (int kk = 0; kk < k; ++kk) {
-                        int ix = ox * stride - pad_l + kk * dilation;
-                        if (ix < 0 || ix >= lin) continue;
-                        size_t x_idx = (size_t)bn * cin * lin + (size_t)ic_abs * lin + (size_t)ix;
-                        size_t w_idx = (size_t)oc * cin_g * k + (size_t)ic * k + (size_t)kk;
-                        acc += x[x_idx] * (int32_t)w[w_idx];
-                    }
+                int32_t col[col_len];
+                im2col_1d_i32(x_g, cin_g, lin, k, ox, stride, pad_l, dilation, col);
+                for (int oc_l = 0; oc_l < cout_g; ++oc_l) {
+                    int oc = g * cout_g + oc_l;
+                    int32_t acc = b ? b[oc] : 0;
+                    acc += dot_i8_i32(w + (size_t)oc * col_len, col, col_len);
+                    y_bn[oc * lout + ox] = acc;
                 }
-                size_t y_idx = (size_t)bn * cout * lout + (size_t)oc * lout + (size_t)ox;
-                y[y_idx] = acc;
             }
         }
     }
@@ -152,25 +646,40 @@ void ${prefix}_kernel_conv1d_ncw_i8w_requant(
     (void)pad_r;
     int cin_g = cin / groups;
     int cout_g = cout / groups;
+    int col_len = cin_g * k;
     for (int bn = 0; bn < n; ++bn) {
-        for (int oc = 0; oc < cout; ++oc) {
-            int g = oc / cout_g;
+        for (int g = 0; g < groups; ++g) {
+            const ONNXCG_ACT_T* x_g = x + ((size_t)bn * cin + (size_t)g * cin_g) * lin;
+            ONNXCG_ACT_T* y_bn = y + (size_t)bn * cout * lout;
             for (int ox = 0; ox < lout; ++ox) {
-                int32_t acc = 0;
-                for (int ic = 0; ic < cin_g; ++ic) {
-                    int ic_abs = g * cin_g + ic;
-                    for (int kk = 0; kk < k; ++kk) {
-                        int ix = ox * stride - pad_l + kk * dilation;
-                        if (ix < 0 || ix >= lin) continue;
-                        size_t x_idx = (size_t)bn * cin * lin + (size_t)ic_abs * lin + (size_t)ix;
-                        size_t w_idx = (size_t)oc * cin_g * k + (size_t)ic * k + (size_t)kk;
-                        acc += (int32_t)x[x_idx] * (int32_t)w[w_idx];
-                    }
+                ONNXCG_ACT_T col[col_len];
+                im2col_1d_act(x_g, cin_g, lin, k, ox, stride, pad_l, dilation, col);
+#ifdef ONNXCG_PULP
+                int oc_l = 0;
+                for (; oc_l + 3 < cout_g; oc_l += 4) {
+                    int oc = g * cout_g + oc_l;
+                    int32_t s0, s1, s2, s3;
+                    pulp_matmul_4x1_i8_act(w + (size_t)oc * col_len, col_len, col, &s0, &s1, &s2, &s3);
+                    y_bn[(oc)   * lout + ox] = (ONNXCG_ACT_T)ONNXCG_CLIP8((s0 * kappa[oc]   + lambda[oc])   >> shift);
+                    y_bn[(oc+1) * lout + ox] = (ONNXCG_ACT_T)ONNXCG_CLIP8((s1 * kappa[oc+1] + lambda[oc+1]) >> shift);
+                    y_bn[(oc+2) * lout + ox] = (ONNXCG_ACT_T)ONNXCG_CLIP8((s2 * kappa[oc+2] + lambda[oc+2]) >> shift);
+                    y_bn[(oc+3) * lout + ox] = (ONNXCG_ACT_T)ONNXCG_CLIP8((s3 * kappa[oc+3] + lambda[oc+3]) >> shift);
                 }
-                int32_t rq = acc * kappa[oc] + lambda[oc];
-                int32_t res = rq >> shift;
-                size_t y_idx = (size_t)bn * cout * lout + (size_t)oc * lout + (size_t)ox;
-                y[y_idx] = cast_i32_to_act(res);
+                for (; oc_l < cout_g; ++oc_l) {
+                    int oc = g * cout_g + oc_l;
+                    int32_t acc = dot_i8_act(w + (size_t)oc * col_len, col, col_len);
+                    int32_t res = (acc * kappa[oc] + lambda[oc]) >> shift;
+                    y_bn[oc * lout + ox] = (ONNXCG_ACT_T)ONNXCG_CLIP8(res);
+                }
+#else
+                for (int oc_l = 0; oc_l < cout_g; ++oc_l) {
+                    int oc = g * cout_g + oc_l;
+                    int32_t acc = dot_i8_act(w + (size_t)oc * col_len, col, col_len);
+                    int32_t rq = acc * kappa[oc] + lambda[oc];
+                    int32_t res = rq >> shift;
+                    y_bn[oc * lout + ox] = cast_i32_to_act(res);
+                }
+#endif
             }
         }
     }
@@ -185,25 +694,21 @@ void ${prefix}_kernel_conv1d_ncw_i32x_i8w_requant(
     (void)pad_r;
     int cin_g = cin / groups;
     int cout_g = cout / groups;
+    int col_len = cin_g * k;
     for (int bn = 0; bn < n; ++bn) {
-        for (int oc = 0; oc < cout; ++oc) {
-            int g = oc / cout_g;
+        for (int g = 0; g < groups; ++g) {
+            const int32_t* x_g = x + ((size_t)bn * cin + (size_t)g * cin_g) * lin;
+            ONNXCG_ACT_T* y_bn = y + (size_t)bn * cout * lout;
             for (int ox = 0; ox < lout; ++ox) {
-                int32_t acc = 0;
-                for (int ic = 0; ic < cin_g; ++ic) {
-                    int ic_abs = g * cin_g + ic;
-                    for (int kk = 0; kk < k; ++kk) {
-                        int ix = ox * stride - pad_l + kk * dilation;
-                        if (ix < 0 || ix >= lin) continue;
-                        size_t x_idx = (size_t)bn * cin * lin + (size_t)ic_abs * lin + (size_t)ix;
-                        size_t w_idx = (size_t)oc * cin_g * k + (size_t)ic * k + (size_t)kk;
-                        acc += x[x_idx] * (int32_t)w[w_idx];
-                    }
+                int32_t col[col_len];
+                im2col_1d_i32(x_g, cin_g, lin, k, ox, stride, pad_l, dilation, col);
+                for (int oc_l = 0; oc_l < cout_g; ++oc_l) {
+                    int oc = g * cout_g + oc_l;
+                    int32_t acc = dot_i8_i32(w + (size_t)oc * col_len, col, col_len);
+                    int32_t rq = acc * kappa[oc] + lambda[oc];
+                    int32_t res = rq >> shift;
+                    y_bn[oc * lout + ox] = cast_i32_to_act(res);
                 }
-                int32_t rq = acc * kappa[oc] + lambda[oc];
-                int32_t res = rq >> shift;
-                size_t y_idx = (size_t)bn * cout * lout + (size_t)oc * lout + (size_t)ox;
-                y[y_idx] = cast_i32_to_act(res);
             }
         }
     }
@@ -279,23 +784,20 @@ void ${prefix}_kernel_conv1d_ncw(
     (void)pad_r;
     int cin_g = cin / groups;
     int cout_g = cout / groups;
+    int col_len = cin_g * k;
     for (int bn = 0; bn < n; ++bn) {
-        for (int oc = 0; oc < cout; ++oc) {
-            int g = oc / cout_g;
+        for (int g = 0; g < groups; ++g) {
+            const ONNXCG_ACT_T* x_g = x + ((size_t)bn * cin + (size_t)g * cin_g) * lin;
+            ONNXCG_ACT_T* y_bn = y + (size_t)bn * cout * lout;
             for (int ox = 0; ox < lout; ++ox) {
-                float acc = b ? b[oc] : 0.0f;
-                for (int ic = 0; ic < cin_g; ++ic) {
-                    int ic_abs = g * cin_g + ic;
-                    for (int kk = 0; kk < k; ++kk) {
-                        int ix = ox * stride - pad_l + kk * dilation;
-                        if (ix < 0 || ix >= lin) continue;
-                        size_t x_idx = (size_t)bn * cin * lin + (size_t)ic_abs * lin + (size_t)ix;
-                        size_t w_idx = (size_t)oc * cin_g * k + (size_t)ic * k + (size_t)kk;
-                        acc += (float)x[x_idx] * w[w_idx];
-                    }
+                ONNXCG_ACT_T col[col_len];
+                im2col_1d_act(x_g, cin_g, lin, k, ox, stride, pad_l, dilation, col);
+                for (int oc_l = 0; oc_l < cout_g; ++oc_l) {
+                    int oc = g * cout_g + oc_l;
+                    float acc = b ? b[oc] : 0.0f;
+                    acc += dot_f_act(w + (size_t)oc * col_len, col, col_len);
+                    y_bn[oc * lout + ox] = ONNXCG_ACT(acc);
                 }
-                size_t y_idx = (size_t)bn * cout * lout + (size_t)oc * lout + (size_t)ox;
-                y[y_idx] = ONNXCG_ACT(acc);
             }
         }
     }
@@ -309,23 +811,20 @@ void ${prefix}_kernel_conv1d_ncw_i8w(
     (void)pad_r;
     int cin_g = cin / groups;
     int cout_g = cout / groups;
+    int col_len = cin_g * k;
     for (int bn = 0; bn < n; ++bn) {
-        for (int oc = 0; oc < cout; ++oc) {
-            int g = oc / cout_g;
+        for (int g = 0; g < groups; ++g) {
+            const ONNXCG_ACT_T* x_g = x + ((size_t)bn * cin + (size_t)g * cin_g) * lin;
+            ONNXCG_ACT_T* y_bn = y + (size_t)bn * cout * lout;
             for (int ox = 0; ox < lout; ++ox) {
-                float acc = b ? b[oc] : 0.0f;
-                for (int ic = 0; ic < cin_g; ++ic) {
-                    int ic_abs = g * cin_g + ic;
-                    for (int kk = 0; kk < k; ++kk) {
-                        int ix = ox * stride - pad_l + kk * dilation;
-                        if (ix < 0 || ix >= lin) continue;
-                        size_t x_idx = (size_t)bn * cin * lin + (size_t)ic_abs * lin + (size_t)ix;
-                        size_t w_idx = (size_t)oc * cin_g * k + (size_t)ic * k + (size_t)kk;
-                        acc += (float)x[x_idx] * (float)w[w_idx];
-                    }
+                ONNXCG_ACT_T col[col_len];
+                im2col_1d_act(x_g, cin_g, lin, k, ox, stride, pad_l, dilation, col);
+                for (int oc_l = 0; oc_l < cout_g; ++oc_l) {
+                    int oc = g * cout_g + oc_l;
+                    float acc = b ? b[oc] : 0.0f;
+                    acc += dot_i8f_act(w + (size_t)oc * col_len, col, col_len);
+                    y_bn[oc * lout + ox] = ONNXCG_ACT(acc);
                 }
-                size_t y_idx = (size_t)bn * cout * lout + (size_t)oc * lout + (size_t)ox;
-                y[y_idx] = ONNXCG_ACT(acc);
             }
         }
     }
@@ -339,23 +838,20 @@ void ${prefix}_kernel_conv1d_ncw_i8w_i32b(
     (void)pad_r;
     int cin_g = cin / groups;
     int cout_g = cout / groups;
+    int col_len = cin_g * k;
     for (int bn = 0; bn < n; ++bn) {
-        for (int oc = 0; oc < cout; ++oc) {
-            int g = oc / cout_g;
+        for (int g = 0; g < groups; ++g) {
+            const ONNXCG_ACT_T* x_g = x + ((size_t)bn * cin + (size_t)g * cin_g) * lin;
+            ONNXCG_ACT_T* y_bn = y + (size_t)bn * cout * lout;
             for (int ox = 0; ox < lout; ++ox) {
-                float acc = b ? (float)b[oc] : 0.0f;
-                for (int ic = 0; ic < cin_g; ++ic) {
-                    int ic_abs = g * cin_g + ic;
-                    for (int kk = 0; kk < k; ++kk) {
-                        int ix = ox * stride - pad_l + kk * dilation;
-                        if (ix < 0 || ix >= lin) continue;
-                        size_t x_idx = (size_t)bn * cin * lin + (size_t)ic_abs * lin + (size_t)ix;
-                        size_t w_idx = (size_t)oc * cin_g * k + (size_t)ic * k + (size_t)kk;
-                        acc += (float)x[x_idx] * (float)w[w_idx];
-                    }
+                ONNXCG_ACT_T col[col_len];
+                im2col_1d_act(x_g, cin_g, lin, k, ox, stride, pad_l, dilation, col);
+                for (int oc_l = 0; oc_l < cout_g; ++oc_l) {
+                    int oc = g * cout_g + oc_l;
+                    float acc = b ? (float)b[oc] : 0.0f;
+                    acc += dot_i8f_act(w + (size_t)oc * col_len, col, col_len);
+                    y_bn[oc * lout + ox] = ONNXCG_ACT(acc);
                 }
-                size_t y_idx = (size_t)bn * cout * lout + (size_t)oc * lout + (size_t)ox;
-                y[y_idx] = ONNXCG_ACT(acc);
             }
         }
     }
@@ -372,27 +868,42 @@ void ${prefix}_kernel_conv1d_ncw_i8w_requant(
     (void)pad_r;
     int cin_g = cin / groups;
     int cout_g = cout / groups;
+    int col_len = cin_g * k;
     for (int bn = 0; bn < n; ++bn) {
-        for (int oc = 0; oc < cout; ++oc) {
-            int g = oc / cout_g;
+        for (int g = 0; g < groups; ++g) {
+            const uint8_t* x_g = x + ((size_t)bn * cin + (size_t)g * cin_g) * lin;
+            uint8_t* y_bn = y + (size_t)bn * cout * lout;
             for (int ox = 0; ox < lout; ++ox) {
-                int32_t acc = 0;
-                for (int ic = 0; ic < cin_g; ++ic) {
-                    int ic_abs = g * cin_g + ic;
-                    for (int kk = 0; kk < k; ++kk) {
-                        int ix = ox * stride - pad_l + kk * dilation;
-                        if (ix < 0 || ix >= lin) continue;
-                        size_t x_idx = (size_t)bn * cin * lin + (size_t)ic_abs * lin + (size_t)ix;
-                        size_t w_idx = (size_t)oc * cin_g * k + (size_t)ic * k + (size_t)kk;
-                        acc += (int32_t)x[x_idx] * (int32_t)w[w_idx];
-                    }
+                uint8_t col[col_len];
+                im2col_1d_u8(x_g, cin_g, lin, k, ox, stride, pad_l, dilation, col);
+#ifdef ONNXCG_PULP
+                int oc_l = 0;
+                for (; oc_l + 3 < cout_g; oc_l += 4) {
+                    int oc = g * cout_g + oc_l;
+                    int32_t s0, s1, s2, s3;
+                    pulp_matmul_4x1_i8_u8(w + (size_t)oc * col_len, col_len, col, &s0, &s1, &s2, &s3);
+                    y_bn[(oc)   * lout + ox] = (uint8_t)ONNXCG_CLIP8((s0 * kappa[oc]   + lambda[oc])   >> shift);
+                    y_bn[(oc+1) * lout + ox] = (uint8_t)ONNXCG_CLIP8((s1 * kappa[oc+1] + lambda[oc+1]) >> shift);
+                    y_bn[(oc+2) * lout + ox] = (uint8_t)ONNXCG_CLIP8((s2 * kappa[oc+2] + lambda[oc+2]) >> shift);
+                    y_bn[(oc+3) * lout + ox] = (uint8_t)ONNXCG_CLIP8((s3 * kappa[oc+3] + lambda[oc+3]) >> shift);
                 }
-                int32_t rq = acc * kappa[oc] + lambda[oc];
-                int32_t res = rq >> shift;
-                if (res < 0) res = 0;
-                if (res > 255) res = 255;
-                size_t y_idx = (size_t)bn * cout * lout + (size_t)oc * lout + (size_t)ox;
-                y[y_idx] = (uint8_t)res;
+                for (; oc_l < cout_g; ++oc_l) {
+                    int oc = g * cout_g + oc_l;
+                    int32_t acc = dot_i8_u8(w + (size_t)oc * col_len, col, col_len);
+                    int32_t res = (acc * kappa[oc] + lambda[oc]) >> shift;
+                    y_bn[oc * lout + ox] = (uint8_t)ONNXCG_CLIP8(res);
+                }
+#else
+                for (int oc_l = 0; oc_l < cout_g; ++oc_l) {
+                    int oc = g * cout_g + oc_l;
+                    int32_t acc = dot_i8_u8(w + (size_t)oc * col_len, col, col_len);
+                    int32_t rq = acc * kappa[oc] + lambda[oc];
+                    int32_t res = rq >> shift;
+                    if (res < 0) res = 0;
+                    if (res > 255) res = 255;
+                    y_bn[oc * lout + ox] = (uint8_t)res;
+                }
+#endif
             }
         }
     }
