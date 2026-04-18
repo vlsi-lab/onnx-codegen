@@ -912,7 +912,7 @@ void ${prefix}_kernel_conv1d_ncw_i8w_requant(
 % endif
 
 %if rogue == 1:
-void rogue_dconv1d_requant(
+void ${prefix}_rogue_dconv1d_requant(
     uint32_t ch_in_ptr,
     uint32_t w_ptr, 
     uint32_t ch_out_ptr,
