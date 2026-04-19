@@ -732,3 +732,275 @@ void ${prefix}_kernel_conv1d_ncw_i8w_requant(
 }
 #endif
 % endif
+
+%if rogue == 1:
+void ${prefix}_rogue_dconv1d_requant(
+    uint32_t ch_in_ptr,
+    uint32_t w_ptr, 
+    uint32_t ch_out_ptr,
+    int32_t * kappa,
+    int32_t * lambda,
+    int shift,
+    uint32_t ch_in,
+    uint32_t ch_out,
+    uint32_t time_lenght,
+    uint32_t kernel_size,
+    uint32_t dilation,
+    uint32_t src_data_type,
+    uint32_t dst_data_type
+){
+
+    // Rogue Configuration
+
+    // synch DMA0 and DMA1
+    SET_SYNCH_DMA_CH_TRANS(0x44);
+
+    // set transation size DMA0 and DMA1
+    SET_TRANS_SIZE_DMA_CH(1, ch_in*kernel_size, 1, ch_in*kernel_size);
+
+    // set decrementing counter for DMA0(write) and DMA1(read) or read or write
+    SET_DMA_RNW(0xA);
+
+    // set ACC value
+    SET_ACC_VALUES(ch_in*kernel_size - 1, 2);
+    SET_ACC_VALUES(ch_in*kernel_size - 1, 3);
+
+    // set PE configuration
+
+	SET_PE_CFG(0x421, 0);
+	SET_PE_CFG(0xc30, 4);
+	SET_PE_CFG(0x404, 5);
+	SET_PE_CFG(0x605, 8);
+	SET_PE_CFG(0x203, 9);
+	SET_PE_CFG(0x803, 12);
+	SET_PE_CFG(0x904, 13);
+
+    SET_PE_CFG(0x421, 2);
+	SET_PE_CFG(0xc30, 6);
+	SET_PE_CFG(0x404, 7);
+	SET_PE_CFG(0x605, 10);
+	SET_PE_CFG(0x203, 11);
+	SET_PE_CFG(0x803, 14);
+	SET_PE_CFG(0x904, 15);
+
+    // set PEA output selection
+    SET_SEL_RES_PEA_COLS(4, 3, 4, 3);
+
+    // set sel output xbar
+    SET_SEL_OUT_XBAR(1, 0, 1, 0);
+
+
+    // DMA part
+
+    dma_init(NULL);
+
+    volatile dma *dma_a = dma_peri(0);
+    volatile dma *dma_b = dma_peri(1);
+    volatile dma *dma_c = dma_peri(2);
+    volatile dma *dma_d = dma_peri(3);
+
+    uint8_t src_shift, dst_shift;
+
+    if(src_data_type == DMA_DATA_TYPE_BYTE){
+        src_shift = 0;
+    }else if(src_data_type == DMA_DATA_TYPE_HALF_WORD){
+        src_shift = 1;
+    }else{
+        src_shift = 2;
+    }
+
+    if(dst_data_type == DMA_DATA_TYPE_BYTE){
+        dst_shift = 0;
+    }else if(dst_data_type == DMA_DATA_TYPE_HALF_WORD){
+        dst_shift = 1;
+    }else{
+        dst_shift = 2;
+    }
+
+    uint32_t ch_out_half;
+
+    if(ch_out % 2 != 0){
+        ch_out_half = (ch_out >> 1) + 1;
+    }else{
+        ch_out_half = ch_out >> 1;
+    }
+
+    ROGUE_DMA_SET_2D(ch_in_ptr,             
+                     ch_out_ptr,             
+                     src_data_type,          
+                     dst_data_type,          
+                     dilation << src_shift,               
+                     1 << dst_shift,                      
+                     time_lenght << src_shift,            
+                     1 << dst_shift,                      
+                     0,                      
+                     kernel_size - 1,                      
+                     0,                      
+                     0,                      
+                     ch_in,                  
+                     dma_a  
+    );
+    
+    ROGUE_DMA_SET_2D(ch_in_ptr,             
+                     ch_out_ptr + ((ch_out_half * time_lenght) << dst_shift),             
+                     src_data_type,          
+                     dst_data_type,          
+                     dilation << src_shift,               
+                     1 << dst_shift,                      
+                     time_lenght << src_shift,            
+                     1 << dst_shift,                      
+                     0,                      
+                     kernel_size - 1,                      
+                     0,                      
+                     0,                      
+                     ch_in,                  
+                     dma_c  
+    );
+
+    ROGUE_DMA_SET_2D(w_ptr,              
+                     NULL,                   
+                     src_data_type,          
+                     dst_data_type,          
+                     1 << src_shift,                      
+                     0,                      
+                     1 << src_shift,                     
+                     0,                      
+                     0,                      
+                     0,                      
+                     0,                      
+                     0,                      
+                     ch_in,                 
+                     dma_b                      
+                );
+
+    ROGUE_DMA_SET_2D(w_ptr + ((ch_out_half * (ch_in * kernel_size)) << src_shift),              
+                     NULL,                   
+                     src_data_type,          
+                     dst_data_type,          
+                     1 << src_shift,                      
+                     0,                      
+                     1 << src_shift,                     
+                     0,                      
+                     0,                      
+                     0,                      
+                     0,                      
+                     0,                      
+                     ch_in,                 
+                     dma_d                     
+                );
+
+
+    uint32_t curr_ch_in_ptr = ch_in_ptr;
+    uint32_t curr_w_ptr_1 = w_ptr;
+    uint32_t curr_w_ptr_2 = w_ptr + ((ch_out_half * (ch_in * kernel_size)) << src_shift);
+    uint32_t curr_ch_out_ptr_1 = ch_out_ptr;
+    uint32_t curr_ch_out_ptr_2 = ch_out_ptr + ((ch_out_half * time_lenght) << dst_shift);
+    uint32_t pad_l = kernel_size - 1;
+
+    uint8_t cond;
+
+    SET_PE_CONSTANT(shift, 8);
+    SET_PE_CONSTANT(shift, 10);
+    SET_PE_CONSTANT(0, 12);
+    SET_PE_CONSTANT(0, 14);
+    SET_PE_CONSTANT(255, 13);
+    SET_PE_CONSTANT(255, 15);
+
+    for(int ch_o = 0; ch_o < ch_out_half; ch_o++){
+
+        SET_PE_CONSTANT(kappa[ch_o], 5);
+        SET_PE_CONSTANT(kappa[ch_o + ch_out_half], 7);
+
+        SET_PE_CONSTANT(lambda[ch_o], 9);
+        SET_PE_CONSTANT(lambda[ch_o + ch_out_half], 11);
+
+        cond = ch_o + ch_out_half < ch_out ? 1 : 0;
+
+        for(int t = 0; t < time_lenght; t++){
+
+            if(t < (kernel_size - 1) * dilation){
+                if(t % dilation == 0 && t != 0){
+                    pad_l = pad_l - 1;
+                }
+                ROGUE_DMA_SET_PAD_L(pad_l, dma_a);
+                ROGUE_DMA_SET_PAD_L(pad_l, dma_c);
+                ROGUE_DMA_START(kernel_size - pad_l, dma_a);
+                if(cond){
+                    ROGUE_DMA_START(kernel_size - pad_l, dma_c);
+                }
+            }else{
+                ROGUE_DMA_SET_PAD_L(0, dma_a);
+                ROGUE_DMA_SET_PAD_L(0, dma_c);
+                ROGUE_DMA_START(kernel_size, dma_a);
+                if(cond){
+                    ROGUE_DMA_START(kernel_size, dma_c);
+                }
+            }
+            
+            ROGUE_DMA_START(kernel_size, dma_b);
+
+            if(cond){
+                ROGUE_DMA_START(kernel_size, dma_d);
+            }
+
+            ROGUE_DMA_WAIT(0);
+            ROGUE_DMA_WAIT(1);
+
+            if(cond){
+                ROGUE_DMA_WAIT(2);
+                ROGUE_DMA_WAIT(3);
+            }
+
+            if(t >= (kernel_size - 1) * dilation){
+                curr_ch_in_ptr = curr_ch_in_ptr + (1 << src_shift);
+            }else if(dilation != 1){
+                if((t + 1) % dilation != 0){
+                    curr_ch_in_ptr = curr_ch_in_ptr + (1 << src_shift);
+                }else{
+                    curr_ch_in_ptr = ch_in_ptr;
+                }
+            }
+
+            if(t < (kernel_size - 1) * dilation){
+                if(((t + 1) % dilation == 0) || dilation == 1){
+                    ROGUE_DMA_SET_SRC_INC2((time_lenght - (kernel_size - pad_l) * dilation) << src_shift, dma_a);
+                    ROGUE_DMA_SET_SRC_INC2((time_lenght - (kernel_size - pad_l) * dilation) << src_shift, dma_c);
+                }
+            }else{
+                ROGUE_DMA_SET_SRC_INC2((time_lenght - (kernel_size - 1) * dilation) << src_shift, dma_a);
+                ROGUE_DMA_SET_SRC_INC2((time_lenght - (kernel_size - 1) * dilation) << src_shift, dma_c);
+            }
+
+            ROGUE_DMA_SET_SRC_PTR(curr_ch_in_ptr , dma_a);
+            ROGUE_DMA_SET_SRC_PTR(curr_ch_in_ptr , dma_c);
+
+            curr_ch_out_ptr_1 = curr_ch_out_ptr_1 + (1 << dst_shift);
+            curr_ch_out_ptr_2 = curr_ch_out_ptr_2 + (1 << dst_shift);
+            ROGUE_DMA_SET_DST_PTR(curr_ch_out_ptr_1, dma_a);
+            ROGUE_DMA_SET_DST_PTR(curr_ch_out_ptr_2, dma_c);
+
+        }   
+        
+        pad_l = kernel_size - 1;
+        ROGUE_DMA_SET_PAD_L(kernel_size - 1, dma_a);
+        ROGUE_DMA_SET_PAD_L(kernel_size - 1, dma_c);
+
+        ROGUE_DMA_SET_SRC_INC2(time_lenght << src_shift, dma_a);
+        ROGUE_DMA_SET_SRC_INC2(time_lenght << src_shift, dma_c);
+
+        curr_w_ptr_1 = curr_w_ptr_1 + ((ch_in * kernel_size) << src_shift);
+        ROGUE_DMA_SET_SRC_PTR(curr_w_ptr_1, dma_b);
+        ROGUE_DMA_SET_SRC_PTR(ch_in_ptr , dma_a);
+
+        curr_w_ptr_2 = curr_w_ptr_2 + ((ch_in * kernel_size) << src_shift);
+        ROGUE_DMA_SET_SRC_PTR(curr_w_ptr_2, dma_d);
+        ROGUE_DMA_SET_SRC_PTR(ch_in_ptr , dma_c);
+
+
+        curr_ch_in_ptr = ch_in_ptr;
+
+
+    }
+
+}
+%endif

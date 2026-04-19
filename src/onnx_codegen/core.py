@@ -1500,13 +1500,14 @@ def render_model_header(
     )
 
 
-def render_kernels_header(prefix: str, quant: Optional[QuantConfig] = None) -> str:
+def render_kernels_header(prefix: str, rogue: int, quant: Optional[QuantConfig] = None) -> str:
     act_ctype = quant.act_ctype if quant and quant.act_bits else "float"
     quant_act_elem_type = quantized_onnx_elem_type(quant)
     return render_template(
         "kernels_h.mako",
         guard=f"{prefix.upper()}_KERNELS_H",
         prefix=prefix,
+        rogue=rogue,
         act_ctype=act_ctype,
         quant_enabled=bool(quant and quant.enabled),
     )
@@ -1514,6 +1515,7 @@ def render_kernels_header(prefix: str, quant: Optional[QuantConfig] = None) -> s
 
 def render_kernels_source(
     prefix: str,
+    rogue: int,
     custom_kernels_header: Optional[str],
     quant: Optional[QuantConfig] = None,
 ) -> str:
@@ -1522,6 +1524,7 @@ def render_kernels_source(
     return render_template(
         "kernels_c.mako",
         prefix=prefix,
+        rogue=rogue,
         timestamp=timestamp,
         custom_kernels_header=custom_kernels_header,
         act_ctype=act_ctype,
@@ -1708,6 +1711,7 @@ def render_model_source(
     custom_kernels_header: Optional[str],
     int8_weight_names: Optional[Set[str]] = None,
     quant: Optional[QuantConfig] = None,
+    rogue: int = 0,
 ) -> str:
     if int8_weight_names is None:
         int8_weight_names = set()
@@ -2042,19 +2046,41 @@ def render_model_source(
                 kappa_name = rq.inputs[1]
                 lambda_name = rq.inputs[2]
                 shift = int(rq.attrs["shift"])
-                conv_func = (
-                    "ONNXCG_CONV1D_I32X_I8W_REQUANT_FUNC"
-                    if x.elem_type == TensorProto.INT32
-                    else "ONNXCG_CONV1D_I8W_REQUANT_FUNC"
-                )
-                lines.append(
-                    f"    {conv_func}("
-                    f"{tensor_expr(ins[0])}, {tensor_expr(ins[1])}, "
-                    f"{tensor_expr(rq_out)}, "
-                    f"{tensor_expr(kappa_name)}, {tensor_expr(lambda_name)}, {shift}, "
-                    f"{n}, {cin}, {lin}, {cout}, {k}, "
-                    f"{strides[0]}, {pads[0]}, {pads[1]}, {dil[0]}, {groups}, {lout});"
-                )
+                if rogue == 1:
+                    conv_func = (
+                        "ONNXCG_CONV1D_REQUANT_ROGUE_FUNC"
+                    )
+
+                    if x.elem_type == TensorProto.INT32:
+                        lines.append(
+                            f"    {conv_func}("
+                            "(uint32_t)"f"{tensor_expr(ins[0])}, " "(uint32_t)"f"{tensor_expr(ins[1])}, "
+                            "(uint32_t)"f"{tensor_expr(rq_out)}, "
+                            f"{tensor_expr(kappa_name)}, {tensor_expr(lambda_name)}, {shift}, "
+                            f"{cin}, {cout}, {lin}, {k}, {dil[0]}, " "DMA_DATA_TYPE_WORD, DMA_DATA_TYPE_BYTE);"
+                        )
+                    else:
+                        lines.append(
+                            f"    {conv_func}("
+                            "(uint32_t)"f"{tensor_expr(ins[0])}, " "(uint32_t)"f"{tensor_expr(ins[1])}, "
+                            "(uint32_t)"f"{tensor_expr(rq_out)}, "
+                            f"{tensor_expr(kappa_name)}, {tensor_expr(lambda_name)}, {shift}, "
+                            f"{cin}, {cout}, {lin}, {k}, {dil[0]}, " "DMA_DATA_TYPE_BYTE, DMA_DATA_TYPE_BYTE);"
+                        )
+                else:
+                    conv_func = (
+                        "ONNXCG_CONV1D_I32X_I8W_REQUANT_FUNC"
+                        if x.elem_type == TensorProto.INT32
+                        else "ONNXCG_CONV1D_I8W_REQUANT_FUNC"
+                    )
+                    lines.append(
+                        f"    {conv_func}("
+                        f"{tensor_expr(ins[0])}, {tensor_expr(ins[1])}, "
+                        f"{tensor_expr(rq_out)}, "
+                        f"{tensor_expr(kappa_name)}, {tensor_expr(lambda_name)}, {shift}, "
+                        f"{n}, {cin}, {lin}, {cout}, {k}, "
+                        f"{strides[0]}, {pads[0]}, {pads[1]}, {dil[0]}, {groups}, {lout});"
+                    )
                 node_idx += 1  # skip the RequantShift node
 
             elif x.rank == 3:
@@ -2841,6 +2867,7 @@ def generate_library(
     skip_shape_inference: bool,
     custom_kernels_header: Optional[str] = None,
     quant: Optional[QuantConfig] = None,
+    rogue: int = 0,
 ) -> GenerationResult:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2887,8 +2914,8 @@ def generate_library(
             tensors, nodes, inputs, outputs, const_arrays, quant
         )
         model_h = render_model_header(prefix, inputs, outputs, tensors, quant)
-        kernels_h = render_kernels_header(prefix, quant)
-        kernels_c = render_kernels_source(prefix, custom_kernels_header, quant)
+        kernels_h = render_kernels_header(prefix, rogue, quant)
+        kernels_c = render_kernels_source(prefix, rogue, custom_kernels_header, quant)
         weights_h, int8_weight_names = render_weights_header(
             prefix, weight_arrays, tensors, quant
         )
@@ -2902,6 +2929,7 @@ def generate_library(
             custom_kernels_header,
             int8_weight_names,
             quant,
+            rogue
         )
         layer_cfg_h = render_layer_config_header(prefix, layer_keys)
 

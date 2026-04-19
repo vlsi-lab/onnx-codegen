@@ -55,6 +55,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--rogue",
+        type=int,
+        choices=(0, 1),
+        default=0,
+        metavar="0|1",
+        help="Use Rogue kernels: 1 to enable, 0 to disable.",
+    )
+    parser.add_argument(
         "--compare",
         action="store_true",
         help=(
@@ -158,6 +166,7 @@ def main() -> int:
         skip_shape_inference=args.skip_shape_inference,
         custom_kernels_header=args.custom_kernels_header,
         quant=quant,
+        rogue=args.rogue
     )
 
     print(f"Generated: {result.model_h_path}")

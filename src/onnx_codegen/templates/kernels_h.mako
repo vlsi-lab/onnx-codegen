@@ -4,6 +4,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+%if rogue == 1:
+#include "dma.h"
+#include "dma_sdk.h"
+#include "rogue_dma_utils.h"
+#include "mage_defs.h"
+%endif
+
 #ifndef ONNXCG_ACT_T
 #define ONNXCG_ACT_T ${act_ctype}
 #endif
@@ -36,6 +43,12 @@
 #ifndef ONNXCG_CONV1D_I32X_I8W_FUNC
 #define ONNXCG_CONV1D_I32X_I8W_FUNC ${prefix}_kernel_conv1d_ncw_i32x_i8w
 #endif
+
+%if rogue == 1:
+#ifndef ONNXCG_CONV1D_REQUANT_ROGUE_FUNC
+#define ONNXCG_CONV1D_REQUANT_ROGUE_FUNC ${prefix}_rogue_dconv1d_requant
+#endif
+%endif
 
 #ifndef ONNXCG_CONV1D_I8W_I32B_FUNC
 #define ONNXCG_CONV1D_I8W_I32B_FUNC ${prefix}_kernel_conv1d_ncw_i8w_i32b
@@ -83,6 +96,24 @@ void ${prefix}_kernel_conv1d_ncw_i32x_i8w(
     int n, int cin, int lin,
     int cout, int k,
     int stride, int pad_l, int pad_r, int dilation, int groups, int lout);
+
+%if rogue == 1:
+void ${prefix}_rogue_dconv1d_requant(
+    uint32_t ch_in_ptr,
+    uint32_t w_ptr, 
+    uint32_t ch_out_ptr,
+    int32_t * kappa,
+    int32_t * lambda,
+    int shift,
+    uint32_t ch_in,
+    uint32_t ch_out,
+    uint32_t time_lenght,
+    uint32_t kernel_size,
+    uint32_t dilation,
+    uint32_t src_data_type,
+    uint32_t dst_data_type
+);
+%endif
 
 void ${prefix}_kernel_conv1d_ncw_i8w_requant(
     const ONNXCG_ACT_T* x, const int8_t* w, ONNXCG_ACT_T* y,
